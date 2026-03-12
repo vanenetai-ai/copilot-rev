@@ -51,10 +51,14 @@ func TranslateToAnthropic(resp ChatCompletionResponse) AnthropicResponse {
 
 	usage := AnthropicUsage{}
 	if resp.Usage != nil {
-		usage.InputTokens = resp.Usage.PromptTokens
-		usage.OutputTokens = resp.Usage.CompletionTokens
+		cachedTokens := 0
 		if resp.Usage.PromptTokensDetails != nil {
-			usage.CacheReadInputTokens = resp.Usage.PromptTokensDetails.CachedTokens
+			cachedTokens = resp.Usage.PromptTokensDetails.CachedTokens
+		}
+		usage.InputTokens = maxInt(resp.Usage.PromptTokens-cachedTokens, 0)
+		usage.OutputTokens = resp.Usage.CompletionTokens
+		if cachedTokens > 0 {
+			usage.CacheReadInputTokens = cachedTokens
 		}
 	}
 
@@ -72,6 +76,13 @@ func TranslateToAnthropic(resp ChatCompletionResponse) AnthropicResponse {
 		StopReason: stopReason,
 		Usage:      usage,
 	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func parseJSONSafe(s string) interface{} {

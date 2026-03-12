@@ -74,14 +74,14 @@ type Metadata struct {
 // --- Anthropic Response ---
 
 type AnthropicResponse struct {
-	ID           string                 `json:"id"`
-	Type         string                 `json:"type"`
-	Role         string                 `json:"role"`
+	ID           string                  `json:"id"`
+	Type         string                  `json:"type"`
+	Role         string                  `json:"role"`
 	Content      []AnthropicContentBlock `json:"content"`
-	Model        string                 `json:"model"`
-	StopReason   string                 `json:"stop_reason"`
-	StopSequence *string                `json:"stop_sequence"`
-	Usage        AnthropicUsage         `json:"usage"`
+	Model        string                  `json:"model"`
+	StopReason   string                  `json:"stop_reason"`
+	StopSequence *string                 `json:"stop_sequence"`
+	Usage        AnthropicUsage          `json:"usage"`
 }
 
 type AnthropicContentBlock struct {
@@ -112,9 +112,9 @@ type MessageStartEvent struct {
 }
 
 type ContentBlockStartEvent struct {
-	Type         string                 `json:"type"`
-	Index        int                    `json:"index"`
-	ContentBlock AnthropicContentBlock  `json:"content_block"`
+	Type         string                `json:"type"`
+	Index        int                   `json:"index"`
+	ContentBlock AnthropicContentBlock `json:"content_block"`
 }
 
 type ContentBlockDeltaEvent struct {
@@ -124,13 +124,13 @@ type ContentBlockDeltaEvent struct {
 }
 
 type DeltaBlock struct {
-	Type         string      `json:"type"`
-	Text         string      `json:"text,omitempty"`
-	PartialJSON  string      `json:"partial_json,omitempty"`
-	StopReason   string      `json:"stop_reason,omitempty"`
-	StopSequence *string     `json:"stop_sequence,omitempty"`
+	Type         string          `json:"type"`
+	Text         string          `json:"text,omitempty"`
+	PartialJSON  string          `json:"partial_json,omitempty"`
+	StopReason   string          `json:"stop_reason,omitempty"`
+	StopSequence *string         `json:"stop_sequence,omitempty"`
 	Usage        *AnthropicUsage `json:"usage,omitempty"`
-	Input        interface{} `json:"-"`
+	Input        interface{}     `json:"-"`
 }
 
 type ContentBlockStopEvent struct {
@@ -139,9 +139,9 @@ type ContentBlockStopEvent struct {
 }
 
 type MessageDeltaEvent struct {
-	Type  string         `json:"type"`
-	Delta MessageDelta   `json:"delta"`
-	Usage *DeltaUsage    `json:"usage,omitempty"`
+	Type  string       `json:"type"`
+	Delta MessageDelta `json:"delta"`
+	Usage *DeltaUsage  `json:"usage,omitempty"`
 }
 
 type MessageDelta struct {
@@ -150,7 +150,9 @@ type MessageDelta struct {
 }
 
 type DeltaUsage struct {
-	OutputTokens int `json:"output_tokens"`
+	InputTokens          int `json:"input_tokens,omitempty"`
+	OutputTokens         int `json:"output_tokens"`
+	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
 }
 
 type PingEvent struct {
@@ -158,8 +160,8 @@ type PingEvent struct {
 }
 
 type ErrorEvent struct {
-	Type  string     `json:"type"`
-	Error ErrorData  `json:"error"`
+	Type  string    `json:"type"`
+	Error ErrorData `json:"error"`
 }
 
 type ErrorData struct {
@@ -170,18 +172,19 @@ type ErrorData struct {
 // --- OpenAI Types ---
 
 type ChatCompletionsPayload struct {
-	Model            string           `json:"model"`
-	Messages         []OpenAIMessage  `json:"messages"`
-	MaxTokens        int              `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int           `json:"max_completion_tokens,omitempty"`
-	Temperature      *float64         `json:"temperature,omitempty"`
-	TopP             *float64         `json:"top_p,omitempty"`
-	Stream           bool             `json:"stream,omitempty"`
-	StreamOptions    *StreamOptions   `json:"stream_options,omitempty"`
-	Stop             interface{}      `json:"stop,omitempty"`
-	Tools            []OpenAITool     `json:"tools,omitempty"`
-	ToolChoice       interface{}      `json:"tool_choice,omitempty"`
-	N                int              `json:"n,omitempty"`
+	Model               string          `json:"model"`
+	Messages            []OpenAIMessage `json:"messages"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64        `json:"temperature,omitempty"`
+	TopP                *float64        `json:"top_p,omitempty"`
+	Stream              bool            `json:"stream,omitempty"`
+	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
+	Stop                interface{}     `json:"stop,omitempty"`
+	Tools               []OpenAITool    `json:"tools,omitempty"`
+	ToolChoice          interface{}     `json:"tool_choice,omitempty"`
+	N                   int             `json:"n,omitempty"`
+	User                string          `json:"user,omitempty"`
 }
 
 type StreamOptions struct {
@@ -189,16 +192,16 @@ type StreamOptions struct {
 }
 
 type OpenAIMessage struct {
-	Role       string        `json:"role"`
-	Content    interface{}   `json:"content,omitempty"` // string or []OpenAIContentPart
-	Name       string        `json:"name,omitempty"`
-	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
-	ToolCallID string        `json:"tool_call_id,omitempty"`
+	Role       string      `json:"role"`
+	Content    interface{} `json:"content,omitempty"` // string or []OpenAIContentPart
+	Name       string      `json:"name,omitempty"`
+	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID string      `json:"tool_call_id,omitempty"`
 }
 
 type OpenAIContentPart struct {
-	Type     string         `json:"type"`
-	Text     string         `json:"text,omitempty"`
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
 	ImageURL *OpenAIImageURL `json:"image_url,omitempty"`
 }
 
@@ -233,20 +236,20 @@ type OpenAIFunction struct {
 // --- OpenAI Response ---
 
 type ChatCompletionResponse struct {
-	ID                string   `json:"id"`
-	Object            string   `json:"object"`
-	Created           int64    `json:"created"`
-	Model             string   `json:"model"`
-	Choices           []Choice `json:"choices"`
+	ID                string       `json:"id"`
+	Object            string       `json:"object"`
+	Created           int64        `json:"created"`
+	Model             string       `json:"model"`
+	Choices           []Choice     `json:"choices"`
 	Usage             *OpenAIUsage `json:"usage,omitempty"`
-	SystemFingerprint string   `json:"system_fingerprint,omitempty"`
+	SystemFingerprint string       `json:"system_fingerprint,omitempty"`
 }
 
 type Choice struct {
-	Index        int          `json:"index"`
-	Message      *ChoiceMsg   `json:"message,omitempty"`
-	Delta        *ChoiceMsg   `json:"delta,omitempty"`
-	FinishReason *string      `json:"finish_reason"`
+	Index        int        `json:"index"`
+	Message      *ChoiceMsg `json:"message,omitempty"`
+	Delta        *ChoiceMsg `json:"delta,omitempty"`
+	FinishReason *string    `json:"finish_reason"`
 }
 
 type ChoiceMsg struct {
@@ -256,10 +259,10 @@ type ChoiceMsg struct {
 }
 
 type OpenAIUsage struct {
-	PromptTokens            int                  `json:"prompt_tokens"`
-	CompletionTokens        int                  `json:"completion_tokens"`
-	TotalTokens             int                  `json:"total_tokens"`
-	PromptTokensDetails     *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	PromptTokens            int                      `json:"prompt_tokens"`
+	CompletionTokens        int                      `json:"completion_tokens"`
+	TotalTokens             int                      `json:"total_tokens"`
+	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
@@ -274,14 +277,15 @@ type CompletionTokensDetails struct {
 // --- Stream State ---
 
 type AnthropicStreamState struct {
-	MessageStartSent  bool
-	ContentBlockIndex int
-	ContentBlockOpen  bool
-	ToolCalls         map[int]*ToolCallState
-	InputTokens       int
-	OutputTokens      int
-	Model             string
-	ID                string
+	MessageStartSent     bool
+	ContentBlockIndex    int
+	ContentBlockOpen     bool
+	ToolCalls            map[int]*ToolCallState
+	InputTokens          int
+	OutputTokens         int
+	CacheReadInputTokens int
+	Model                string
+	ID                   string
 }
 
 type ToolCallState struct {

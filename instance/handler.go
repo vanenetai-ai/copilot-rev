@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 
@@ -19,16 +20,8 @@ import (
 // DoCompletionsProxy performs the upstream request for completions and returns the raw response.
 // The caller is responsible for closing resp.Body.
 func DoCompletionsProxy(_ *gin.Context, state *config.State, bodyBytes []byte) (*http.Response, error) {
-	// Apply model mapping
-	var payload map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &payload); err == nil {
-		if model, ok := payload["model"].(string); ok {
-			payload["model"] = store.ToCopilotID(model)
-			bodyBytes, _ = json.Marshal(payload)
-		}
-	}
-
-	return ProxyRequestWithBytes(state, "POST", "/chat/completions", bodyBytes, nil, false)
+	bodyBytes, extraHeaders := normalizeCompletionsPayload(bodyBytes)
+	return ProxyRequestWithBytes(state, "POST", "/chat/completions", bodyBytes, extraHeaders, false)
 }
 
 // ForwardCompletionsResponse writes the upstream response to the client.
@@ -145,7 +138,10 @@ func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*ht
 		return nil, fmt.Errorf("failed to marshal request: %v", err)
 	}
 
-	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, nil, hasVision)
+	extraHeaders := make(http.Header)
+	extraHeaders.Set("X-Initiator", initiatorFromMessages(openaiPayload.Messages))
+
+	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, extraHeaders, hasVision)
 }
 
 // ForwardMessagesResponse writes the upstream response to the client in Anthropic format.
@@ -273,6 +269,58 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 	}
 }
 
+func normalizeCompletionsPayload(bodyBytes []byte) ([]byte, http.Header) {
+	extraHeaders := make(http.Header)
+	extraHeaders.Set("X-Initiator", "user")
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return bodyBytes, extraHeaders
+	}
+
+	if model, ok := payload["model"].(string); ok {
+		payload["model"] = store.ToCopilotID(model)
+	}
+
+	if hasAgentMessages(payload["messages"]) {
+		extraHeaders.Set("X-Initiator", "agent")
+	}
+
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return bodyBytes, extraHeaders
+	}
+	return normalized, extraHeaders
+}
+
+func initiatorFromMessages(messages []anthropic.OpenAIMessage) string {
+	for _, message := range messages {
+		if message.Role == "assistant" || message.Role == "tool" {
+			return "agent"
+		}
+	}
+	return "user"
+}
+
+func hasAgentMessages(rawMessages interface{}) bool {
+	messages, ok := rawMessages.([]interface{})
+	if !ok {
+		return false
+	}
+
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role, _ := message["role"].(string)
+		if role == "assistant" || role == "tool" {
+			return true
+		}
+	}
+	return false
+}
+
 func writeSSE(w io.Writer, event string, data interface{}) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -284,6 +332,8 @@ func writeSSE(w io.Writer, event string, data interface{}) error {
 
 // CountTokensHandler provides a simplified token count estimation.
 func CountTokensHandler(c *gin.Context, _ *config.State) {
+	anthropicBeta := c.GetHeader("anthropic-beta")
+
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
@@ -296,31 +346,81 @@ func CountTokensHandler(c *gin.Context, _ *config.State) {
 		return
 	}
 
-	totalChars := 0
+	openaiPayload := anthropic.TranslateToOpenAI(payload)
+	inputTokens, outputTokens := estimateOpenAITokens(openaiPayload)
 
-	if payload.System != nil {
-		sysData, _ := json.Marshal(payload.System)
-		totalChars += len(string(sysData))
+	if len(payload.Tools) > 0 && !hasClaudeCodeMCPTools(anthropicBeta, payload.Tools) {
+		switch {
+		case strings.HasPrefix(payload.Model, "claude"):
+			inputTokens += 346
+		case strings.HasPrefix(payload.Model, "grok"):
+			inputTokens += 480
+		}
 	}
 
+	finalTokenCount := inputTokens + outputTokens
+	switch {
+	case strings.HasPrefix(payload.Model, "claude"):
+		finalTokenCount = int(math.Round(float64(finalTokenCount) * 1.15))
+	case strings.HasPrefix(payload.Model, "grok"):
+		finalTokenCount = int(math.Round(float64(finalTokenCount) * 1.03))
+	}
+	finalTokenCount = maxTokenCount(finalTokenCount, 1)
+
+	c.JSON(http.StatusOK, gin.H{
+		"input_tokens": finalTokenCount,
+	})
+}
+
+func estimateOpenAITokens(payload anthropic.ChatCompletionsPayload) (int, int) {
+	inputTokens := 0
+	outputTokens := 0
+
 	for _, msg := range payload.Messages {
-		msgData, _ := json.Marshal(msg.Content)
-		totalChars += len(string(msgData))
+		tokens := estimateJSONTokens(msg) + 3
+		if msg.Role == "assistant" {
+			outputTokens += tokens
+		} else {
+			inputTokens += tokens
+		}
 	}
 
 	if len(payload.Tools) > 0 {
-		toolData, _ := json.Marshal(payload.Tools)
-		totalChars += len(string(toolData))
+		inputTokens += estimateJSONTokens(payload.Tools)
 	}
 
-	inputTokens := totalChars / 4
-	if inputTokens < 1 {
-		inputTokens = 1
-	}
+	return inputTokens, outputTokens
+}
 
-	c.JSON(http.StatusOK, gin.H{
-		"input_tokens": inputTokens,
-	})
+func estimateJSONTokens(v interface{}) int {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return 0
+	}
+	tokens := len(data) / 4
+	if tokens < 1 {
+		return 1
+	}
+	return tokens
+}
+
+func maxTokenCount(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func hasClaudeCodeMCPTools(anthropicBeta string, tools []anthropic.AnthropicTool) bool {
+	if !strings.HasPrefix(anthropicBeta, "claude-code") {
+		return false
+	}
+	for _, tool := range tools {
+		if strings.HasPrefix(tool.Name, "mcp__") {
+			return true
+		}
+	}
+	return false
 }
 
 func checkVisionContent(payload anthropic.AnthropicMessagesPayload) bool {

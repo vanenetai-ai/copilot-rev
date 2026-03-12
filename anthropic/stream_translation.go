@@ -20,6 +20,16 @@ func TranslateChunkToAnthropicEvents(chunk ChatCompletionResponse, state *Anthro
 		state.ID = chunk.ID
 	}
 
+	if chunk.Usage != nil {
+		cachedTokens := 0
+		if chunk.Usage.PromptTokensDetails != nil {
+			cachedTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+		}
+		state.InputTokens = maxInt(chunk.Usage.PromptTokens-cachedTokens, 0)
+		state.OutputTokens = chunk.Usage.CompletionTokens
+		state.CacheReadInputTokens = cachedTokens
+	}
+
 	// Send message_start on first chunk
 	if !state.MessageStartSent {
 		state.MessageStartSent = true
@@ -32,14 +42,15 @@ func TranslateChunkToAnthropicEvents(chunk ChatCompletionResponse, state *Anthro
 			Data: MessageStartEvent{
 				Type: "message_start",
 				Message: AnthropicResponse{
-					ID:    id,
-					Type:  "message",
-					Role:  "assistant",
-					Model: state.Model,
+					ID:      id,
+					Type:    "message",
+					Role:    "assistant",
+					Model:   state.Model,
 					Content: []AnthropicContentBlock{},
 					Usage: AnthropicUsage{
-						InputTokens:  state.InputTokens,
-						OutputTokens: 0,
+						InputTokens:          state.InputTokens,
+						OutputTokens:         0,
+						CacheReadInputTokens: state.CacheReadInputTokens,
 					},
 				},
 			},
@@ -48,12 +59,6 @@ func TranslateChunkToAnthropicEvents(chunk ChatCompletionResponse, state *Anthro
 			Event: "ping",
 			Data:  PingEvent{Type: "ping"},
 		})
-	}
-
-	// Handle usage-only chunk (last chunk with usage info)
-	if chunk.Usage != nil {
-		state.InputTokens = chunk.Usage.PromptTokens
-		state.OutputTokens = chunk.Usage.CompletionTokens
 	}
 
 	for _, choice := range chunk.Choices {
@@ -70,7 +75,9 @@ func TranslateChunkToAnthropicEvents(chunk ChatCompletionResponse, state *Anthro
 							StopReason: MapOpenAIStopReasonToAnthropic(*choice.FinishReason),
 						},
 						Usage: &DeltaUsage{
-							OutputTokens: state.OutputTokens,
+							InputTokens:          state.InputTokens,
+							OutputTokens:         state.OutputTokens,
+							CacheReadInputTokens: state.CacheReadInputTokens,
 						},
 					},
 				})
@@ -169,7 +176,9 @@ func TranslateChunkToAnthropicEvents(chunk ChatCompletionResponse, state *Anthro
 						StopReason: MapOpenAIStopReasonToAnthropic(*choice.FinishReason),
 					},
 					Usage: &DeltaUsage{
-						OutputTokens: state.OutputTokens,
+						InputTokens:          state.InputTokens,
+						OutputTokens:         state.OutputTokens,
+						CacheReadInputTokens: state.CacheReadInputTokens,
 					},
 				},
 			})

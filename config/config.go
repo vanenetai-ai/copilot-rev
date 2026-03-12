@@ -6,14 +6,16 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
-	CopilotVersion = "0.26.7"
-	GithubClientID = "Iv1.b507a08c87ecfe98"
+	CopilotVersion   = "0.26.7"
+	GithubClientID   = "Iv1.b507a08c87ecfe98"
+	GithubAPIVersion = "2025-04-01"
 
-	CopilotChatURL         = "https://api.individual.githubcopilot.com"
-	CopilotBusinessChatURL = "https://api.business.githubcopilot.com"
+	CopilotIndividualChatURL = "https://api.githubcopilot.com"
 
 	GithubCopilotURL = "https://api.github.com/copilot_internal/v2/token"
 	GithubDeviceURL  = "https://github.com/login/device/code"
@@ -92,10 +94,10 @@ func (s *State) RLock()   { s.mu.RLock() }
 func (s *State) RUnlock() { s.mu.RUnlock() }
 
 func CopilotBaseURL(accountType string) string {
-	if accountType == "business" {
-		return CopilotBusinessChatURL
+	if accountType == "" || accountType == "individual" {
+		return CopilotIndividualChatURL
 	}
-	return CopilotChatURL
+	return fmt.Sprintf("https://api.%s.githubcopilot.com", accountType)
 }
 
 func CopilotHeaders(state *State, vision bool) http.Header {
@@ -111,8 +113,10 @@ func CopilotHeaders(state *State, vision bool) http.Header {
 	h.Set("Editor-Plugin-Version", "copilot-chat/"+CopilotVersion)
 	h.Set("User-Agent", fmt.Sprintf("GitHubCopilotChat/%s", CopilotVersion))
 	h.Set("Openai-Intent", "conversation-panel")
+	h.Set("X-GitHub-API-Version", GithubAPIVersion)
+	h.Set("X-Request-Id", uuid.NewString())
+	h.Set("X-Vscode-User-Agent-Library-Version", "electron-fetch")
 	if vision {
-		h.Set("Copilot-Vision-Enabled", "true")
 		h.Set("Copilot-Vision-Request", "true")
 	}
 	return h
@@ -124,7 +128,12 @@ func GithubHeaders(state *State) http.Header {
 
 	h := make(http.Header)
 	h.Set("Authorization", "token "+state.GithubToken)
+	h.Set("Content-Type", "application/json")
 	h.Set("Accept", "application/json")
+	h.Set("Editor-Version", "vscode/"+state.VSCodeVersion)
+	h.Set("Editor-Plugin-Version", "copilot-chat/"+CopilotVersion)
 	h.Set("User-Agent", fmt.Sprintf("GitHubCopilotChat/%s", CopilotVersion))
+	h.Set("X-GitHub-API-Version", GithubAPIVersion)
+	h.Set("X-Vscode-User-Agent-Library-Version", "electron-fetch")
 	return h
 }

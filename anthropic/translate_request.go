@@ -11,7 +11,7 @@ import (
 // TranslateToOpenAI converts an Anthropic messages payload to OpenAI chat completions payload.
 func TranslateToOpenAI(payload AnthropicMessagesPayload) ChatCompletionsPayload {
 	result := ChatCompletionsPayload{
-		Model:       store.ToCopilotID(payload.Model),
+		Model:       normalizeAnthropicModel(store.ToCopilotID(payload.Model)),
 		Stream:      payload.Stream,
 		Temperature: payload.Temperature,
 		TopP:        payload.TopP,
@@ -27,6 +27,10 @@ func TranslateToOpenAI(payload AnthropicMessagesPayload) ChatCompletionsPayload 
 
 	if payload.StopSequences != nil && len(payload.StopSequences) > 0 {
 		result.Stop = payload.StopSequences
+	}
+
+	if payload.Metadata != nil && payload.Metadata.UserID != "" {
+		result.User = payload.Metadata.UserID
 	}
 
 	// Convert system prompt
@@ -68,6 +72,17 @@ func TranslateToOpenAI(payload AnthropicMessagesPayload) ChatCompletionsPayload 
 	}
 
 	return result
+}
+
+func normalizeAnthropicModel(model string) string {
+	switch {
+	case strings.HasPrefix(model, "claude-sonnet-4-"):
+		return "claude-sonnet-4"
+	case strings.HasPrefix(model, "claude-opus-4-"):
+		return "claude-opus-4"
+	default:
+		return model
+	}
 }
 
 func extractSystemText(system interface{}) string {
