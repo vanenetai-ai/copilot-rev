@@ -237,10 +237,6 @@ func tokenRefreshLoop(inst *ProxyInstance) {
 			continue
 		}
 
-		// Also refresh models.
-		if err := fetchModels(inst.State); err != nil {
-			log.Printf("Models refresh failed for %s: %v", inst.Account.Name, err)
-		}
 	}
 }
 
