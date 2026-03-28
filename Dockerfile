@@ -20,7 +20,6 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=backend /app/copilot-go .
-COPY --from=backend /app/web/dist ./web/dist
 
 EXPOSE 3000 4141
 VOLUME /root/.local/share/copilot-api

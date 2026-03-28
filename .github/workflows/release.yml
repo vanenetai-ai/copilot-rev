@@ -58,8 +58,6 @@ jobs:
               go build -ldflags="-s -w" \
               -o "dist/${PKG}/copilot-go${EXT}" .
 
-            cp -r web/dist "dist/${PKG}/web"
-
             if [ "$GOOS" = "windows" ]; then
               (cd dist && zip -r "${PKG}.zip" "${PKG}")
             else

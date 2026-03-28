@@ -3,6 +3,8 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"copilot-go/config"
 	"copilot-go/instance"
 	"copilot-go/store"
+	"copilot-go/web"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -23,14 +26,31 @@ func RegisterConsoleAPI(r *gin.Engine, proxyPort int) {
 	// Serve frontend static files
 	webDist := findWebDist()
 	if webDist != "" {
+		// Development: serve from filesystem
 		r.Static("/assets", filepath.Join(webDist, "assets"))
 		r.StaticFile("/", filepath.Join(webDist, "index.html"))
-		// SPA fallback: serve index.html for non-API, non-asset routes
 		r.NoRoute(func(c *gin.Context) {
 			if !strings.HasPrefix(c.Request.URL.Path, "/api") {
 				c.File(filepath.Join(webDist, "index.html"))
 			}
 		})
+	} else {
+		// Production: serve from embedded filesystem
+		distFS, err := fs.Sub(web.Dist, "dist")
+		if err != nil {
+			log.Printf("Warning: failed to access embedded web dist: %v", err)
+		} else {
+			assetsFS, _ := fs.Sub(distFS, "assets")
+			r.StaticFS("/assets", http.FS(assetsFS))
+			r.GET("/", func(c *gin.Context) {
+				c.FileFromFS("/index.html", http.FS(distFS))
+			})
+			r.NoRoute(func(c *gin.Context) {
+				if !strings.HasPrefix(c.Request.URL.Path, "/api") {
+					c.FileFromFS("/index.html", http.FS(distFS))
+				}
+			})
+		}
 	}
 
 	api := r.Group("/api")
