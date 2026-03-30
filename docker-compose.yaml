@@ -6,13 +6,13 @@ services:
     container_name: copilot-go
     restart: unless-stopped
     ports:
-      - "3000:3000"   # Web Console
+      - "${WEB_PORT:-3001}:${WEB_PORT:-3001}"   # Web Console
       - "4141:4141"   # Proxy
     volumes:
       - copilot-data:/root/.local/share/copilot-api
     environment:
       - TZ=Asia/Shanghai
-    command: ["./copilot-go", "--web-port=3000", "--proxy-port=4141"]
+    command: ["./copilot-go", "--web-port=${WEB_PORT:-3001}", "--proxy-port=4141"]
 
 volumes:
   copilot-data:
