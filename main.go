@@ -31,10 +31,13 @@ func main() {
 	}
 
 	// Load proxy config and apply to HTTP clients
-	if proxyCfg, err := store.GetProxyConfig(); err == nil && proxyCfg.ProxyURL != "" {
-		config.SetProxyURL(proxyCfg.ProxyURL)
-		instance.RebuildHTTPClients()
-		log.Printf("Using HTTP proxy: %s", proxyCfg.ProxyURL)
+	if proxyCfg, err := store.GetProxyConfig(); err == nil {
+		instance.SetResponseCacheTTLSeconds(proxyCfg.CacheTTLSeconds)
+		if proxyCfg.ProxyURL != "" {
+			config.SetProxyURL(proxyCfg.ProxyURL)
+			instance.RebuildHTTPClients()
+			log.Printf("Using HTTP proxy: %s", proxyCfg.ProxyURL)
+		}
 	}
 
 	// Auto-start enabled accounts

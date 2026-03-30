@@ -127,24 +127,97 @@ func isRetryableStatus(statusCode int) bool {
 	return statusCode == http.StatusTooManyRequests || (statusCode >= 500 && statusCode <= 599)
 }
 
-// checkRateLimit checks the rate limit for the account and writes a 429 response if exceeded.
-// Returns true if the request is allowed, false if rate limited.
-func checkRateLimit(c *gin.Context, accountID string) bool {
-	allowed, retryAfter := instance.CheckRateLimit(accountID)
-	if !allowed {
-		c.Header("Retry-After", fmt.Sprintf("%.0f", retryAfter))
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error": gin.H{
-				"message": "rate limit exceeded",
-				"type":    "rate_limit_error",
-			},
-		})
+func checkRateLimit(accountID string) (bool, float64) {
+	return instance.CheckRateLimit(accountID)
+}
+
+func writeRateLimitResponse(c *gin.Context, retryAfter float64) {
+	c.Header("Retry-After", fmt.Sprintf("%.0f", retryAfter))
+	c.JSON(http.StatusTooManyRequests, gin.H{
+		"error": gin.H{
+			"message": "rate limit exceeded",
+			"type":    "rate_limit_error",
+		},
+	})
+}
+
+func applySimulatedCacheHeaders(c *gin.Context, businessHit bool, clientHit bool) {
+	c.Header("X-Business-Cache-Simulated", cacheDirectiveHeaderValue(businessHit))
+	c.Header("X-Client-Cache-Simulated", cacheDirectiveHeaderValue(clientHit))
+}
+
+func cacheDirectiveHeaderValue(hit bool) string {
+	if hit {
+		return "HIT"
+	}
+	return "MISS"
+}
+
+type cacheDirective int
+
+const (
+	cacheDirectiveAuto cacheDirective = iota
+	cacheDirectiveHit
+	cacheDirectiveMiss
+)
+
+func parseCacheDirective(value string) cacheDirective {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "hit", "yes", "on":
+		return cacheDirectiveHit
+	case "0", "false", "miss", "no", "off":
+		return cacheDirectiveMiss
+	default:
+		return cacheDirectiveAuto
+	}
+}
+
+func tryServeCachedResponse(c *gin.Context, accountID string, bodyBytes []byte, businessHit bool, clientHit bool) bool {
+	if !businessHit && !clientHit {
 		return false
 	}
+	cached, ok := instance.GetCachedResponse(accountID, c.FullPath(), bodyBytes)
+	if !ok {
+		return false
+	}
+	applySimulatedCacheHeaders(c, businessHit, clientHit)
+	instance.RecordRequest(accountID, instance.RequestUsageEvent{
+		BusinessCacheHit: businessHit,
+		ClientCacheHit:   clientHit,
+	})
+	instance.WriteCachedResponse(c, cached)
 	return true
 }
 
-// proxyCompletions handles completions with pool-mode retry support.
+func storeCachedResponse(accountID string, c *gin.Context, bodyBytes []byte, response *instance.CachedResponse) {
+	if response == nil || response.StatusCode != http.StatusOK {
+		return
+	}
+	instance.StoreCachedResponse(accountID, c.FullPath(), bodyBytes, response)
+}
+
+func resolveBusinessCacheHit(c *gin.Context, accountID string, bodyBytes []byte) bool {
+	switch parseCacheDirective(c.GetHeader("X-Business-Cache-Hit")) {
+	case cacheDirectiveHit:
+		return true
+	case cacheDirectiveMiss:
+		return false
+	default:
+		return instance.DetectBusinessCacheHit(accountID, c.FullPath(), bodyBytes)
+	}
+}
+
+func resolveClientCacheHit(c *gin.Context, accountID string, bodyBytes []byte) bool {
+	switch parseCacheDirective(c.GetHeader("X-Client-Cache-Hit")) {
+	case cacheDirectiveHit:
+		return true
+	case cacheDirectiveMiss:
+		return false
+	default:
+		return instance.DetectClientCacheHit(accountID, c.FullPath(), bodyBytes)
+	}
+}
+
 func proxyCompletions(c *gin.Context) {
 	isPool, _ := c.Get("isPool")
 	maxAttempts := 1
@@ -166,25 +239,45 @@ func proxyCompletions(c *gin.Context) {
 			return // resolveState already wrote the error response
 		}
 
-		// Check rate limit.
-		if !checkRateLimit(c, resolved.AccountID) {
+		businessCacheHit := resolveBusinessCacheHit(c, resolved.AccountID, bodyBytes)
+		clientCacheHit := resolveClientCacheHit(c, resolved.AccountID, bodyBytes)
+		if tryServeCachedResponse(c, resolved.AccountID, bodyBytes, businessCacheHit, clientCacheHit) {
 			return
 		}
-
-		// Record the request.
-		instance.RecordRequest(resolved.AccountID, false, false)
+		allowed, retryAfter := checkRateLimit(resolved.AccountID)
+		if !allowed {
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				Is429:            true,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
+			if attempt < maxAttempts-1 {
+				exclude[resolved.AccountID] = true
+				log.Printf("Local rate limit hit for account %s, retrying with different account", resolved.AccountID)
+				continue
+			}
+			applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
+			writeRateLimitResponse(c, retryAfter)
+			return
+		}
 
 		resp, proxyErr := instance.DoCompletionsProxy(c, resolved.State, bodyBytes)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()
 			}
-			instance.RecordRequest(resolved.AccountID, true, false)
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
 			if attempt < maxAttempts-1 {
 				exclude[resolved.AccountID] = true
 				log.Printf("Completions proxy error for account %s, retrying: %v", resolved.AccountID, proxyErr)
 				continue
 			}
+			applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", proxyErr)})
 			return
 		}
@@ -192,15 +285,32 @@ func proxyCompletions(c *gin.Context) {
 		// Check if retryable.
 		if isRetryableStatus(resp.StatusCode) && attempt < maxAttempts-1 {
 			is429 := resp.StatusCode == http.StatusTooManyRequests
-			instance.RecordRequest(resolved.AccountID, true, is429)
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				Is429:            is429,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
 			_ = resp.Body.Close()
 			exclude[resolved.AccountID] = true
 			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountID)
 			continue
 		}
 
-		// Forward the response.
-		instance.ForwardCompletionsResponse(c, resp)
+		clientResponse, buildErr := instance.BuildCompletionsClientResponse(resp)
+		if buildErr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to build response: %v", buildErr)})
+			return
+		}
+		instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+			Failed:           isRetryableStatus(resp.StatusCode),
+			Is429:            resp.StatusCode == http.StatusTooManyRequests,
+			BusinessCacheHit: businessCacheHit,
+			ClientCacheHit:   clientCacheHit,
+		})
+		storeCachedResponse(resolved.AccountID, c, bodyBytes, clientResponse)
+		applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
+		instance.WriteCachedResponse(c, clientResponse)
 		return
 	}
 }
@@ -233,37 +343,77 @@ func proxyEmbeddings(c *gin.Context) {
 			return
 		}
 
-		if !checkRateLimit(c, resolved.AccountID) {
+		businessCacheHit := resolveBusinessCacheHit(c, resolved.AccountID, bodyBytes)
+		clientCacheHit := resolveClientCacheHit(c, resolved.AccountID, bodyBytes)
+		if tryServeCachedResponse(c, resolved.AccountID, bodyBytes, businessCacheHit, clientCacheHit) {
 			return
 		}
-
-		instance.RecordRequest(resolved.AccountID, false, false)
+		allowed, retryAfter := checkRateLimit(resolved.AccountID)
+		if !allowed {
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				Is429:            true,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
+			if attempt < maxAttempts-1 {
+				exclude[resolved.AccountID] = true
+				log.Printf("Local rate limit hit for account %s, retrying with different account", resolved.AccountID)
+				continue
+			}
+			applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
+			writeRateLimitResponse(c, retryAfter)
+			return
+		}
 
 		resp, proxyErr := instance.DoEmbeddingsProxy(resolved.State, bodyBytes)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()
 			}
-			instance.RecordRequest(resolved.AccountID, true, false)
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
 			if attempt < maxAttempts-1 {
 				exclude[resolved.AccountID] = true
 				log.Printf("Embeddings proxy error for account %s, retrying: %v", resolved.AccountID, proxyErr)
 				continue
 			}
+			applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", proxyErr)})
 			return
 		}
 
 		if isRetryableStatus(resp.StatusCode) && attempt < maxAttempts-1 {
 			is429 := resp.StatusCode == http.StatusTooManyRequests
-			instance.RecordRequest(resolved.AccountID, true, is429)
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				Is429:            is429,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
 			_ = resp.Body.Close()
 			exclude[resolved.AccountID] = true
 			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountID)
 			continue
 		}
 
-		instance.ForwardEmbeddingsResponse(c, resp)
+		clientResponse, buildErr := instance.BuildEmbeddingsClientResponse(resp)
+		if buildErr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to build response: %v", buildErr)})
+			return
+		}
+		instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+			Failed:           isRetryableStatus(resp.StatusCode),
+			Is429:            resp.StatusCode == http.StatusTooManyRequests,
+			BusinessCacheHit: businessCacheHit,
+			ClientCacheHit:   clientCacheHit,
+		})
+		storeCachedResponse(resolved.AccountID, c, bodyBytes, clientResponse)
+		applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
+		instance.WriteCachedResponse(c, clientResponse)
 		return
 	}
 }
@@ -288,37 +438,77 @@ func proxyMessages(c *gin.Context) {
 			return
 		}
 
-		if !checkRateLimit(c, resolved.AccountID) {
+		businessCacheHit := resolveBusinessCacheHit(c, resolved.AccountID, bodyBytes)
+		clientCacheHit := resolveClientCacheHit(c, resolved.AccountID, bodyBytes)
+		if tryServeCachedResponse(c, resolved.AccountID, bodyBytes, businessCacheHit, clientCacheHit) {
 			return
 		}
-
-		instance.RecordRequest(resolved.AccountID, false, false)
+		allowed, retryAfter := checkRateLimit(resolved.AccountID)
+		if !allowed {
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				Is429:            true,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
+			if attempt < maxAttempts-1 {
+				exclude[resolved.AccountID] = true
+				log.Printf("Local rate limit hit for account %s, retrying with different account", resolved.AccountID)
+				continue
+			}
+			applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
+			writeRateLimitResponse(c, retryAfter)
+			return
+		}
 
 		resp, proxyErr := instance.DoMessagesProxy(c, resolved.State, bodyBytes)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()
 			}
-			instance.RecordRequest(resolved.AccountID, true, false)
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
 			if attempt < maxAttempts-1 {
 				exclude[resolved.AccountID] = true
 				log.Printf("Messages proxy error for account %s, retrying: %v", resolved.AccountID, proxyErr)
 				continue
 			}
+			applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", proxyErr)})
 			return
 		}
 
 		if isRetryableStatus(resp.StatusCode) && attempt < maxAttempts-1 {
 			is429 := resp.StatusCode == http.StatusTooManyRequests
-			instance.RecordRequest(resolved.AccountID, true, is429)
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				Is429:            is429,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
 			_ = resp.Body.Close()
 			exclude[resolved.AccountID] = true
 			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountID)
 			continue
 		}
 
-		instance.ForwardMessagesResponse(c, resp, bodyBytes)
+		clientResponse, buildErr := instance.BuildMessagesClientResponse(resp, bodyBytes)
+		if buildErr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to build response: %v", buildErr)})
+			return
+		}
+		instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+			Failed:           isRetryableStatus(resp.StatusCode),
+			Is429:            resp.StatusCode == http.StatusTooManyRequests,
+			BusinessCacheHit: businessCacheHit,
+			ClientCacheHit:   clientCacheHit,
+		})
+		storeCachedResponse(resolved.AccountID, c, bodyBytes, clientResponse)
+		applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
+		instance.WriteCachedResponse(c, clientResponse)
 		return
 	}
 }
@@ -351,37 +541,77 @@ func proxyResponses(c *gin.Context) {
 			return
 		}
 
-		if !checkRateLimit(c, resolved.AccountID) {
+		businessCacheHit := resolveBusinessCacheHit(c, resolved.AccountID, bodyBytes)
+		clientCacheHit := resolveClientCacheHit(c, resolved.AccountID, bodyBytes)
+		if tryServeCachedResponse(c, resolved.AccountID, bodyBytes, businessCacheHit, clientCacheHit) {
 			return
 		}
-
-		instance.RecordRequest(resolved.AccountID, false, false)
+		allowed, retryAfter := checkRateLimit(resolved.AccountID)
+		if !allowed {
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				Is429:            true,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
+			if attempt < maxAttempts-1 {
+				exclude[resolved.AccountID] = true
+				log.Printf("Local rate limit hit for account %s, retrying with different account", resolved.AccountID)
+				continue
+			}
+			applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
+			writeRateLimitResponse(c, retryAfter)
+			return
+		}
 
 		resp, proxyErr := instance.DoResponsesProxy(resolved.State, bodyBytes)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()
 			}
-			instance.RecordRequest(resolved.AccountID, true, false)
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
 			if attempt < maxAttempts-1 {
 				exclude[resolved.AccountID] = true
 				log.Printf("Responses proxy error for account %s, retrying: %v", resolved.AccountID, proxyErr)
 				continue
 			}
+			applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("proxy request failed: %v", proxyErr)})
 			return
 		}
 
 		if isRetryableStatus(resp.StatusCode) && attempt < maxAttempts-1 {
 			is429 := resp.StatusCode == http.StatusTooManyRequests
-			instance.RecordRequest(resolved.AccountID, true, is429)
+			instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+				Failed:           true,
+				Is429:            is429,
+				BusinessCacheHit: businessCacheHit,
+				ClientCacheHit:   clientCacheHit,
+			})
 			_ = resp.Body.Close()
 			exclude[resolved.AccountID] = true
 			log.Printf("Upstream returned %d for account %s, retrying with different account", resp.StatusCode, resolved.AccountID)
 			continue
 		}
 
-		instance.ForwardResponsesResponse(c, resp)
+		clientResponse, buildErr := instance.BuildResponsesClientResponse(resp)
+		if buildErr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to build response: %v", buildErr)})
+			return
+		}
+		instance.RecordRequest(resolved.AccountID, instance.RequestUsageEvent{
+			Failed:           isRetryableStatus(resp.StatusCode),
+			Is429:            resp.StatusCode == http.StatusTooManyRequests,
+			BusinessCacheHit: businessCacheHit,
+			ClientCacheHit:   clientCacheHit,
+		})
+		storeCachedResponse(resolved.AccountID, c, bodyBytes, clientResponse)
+		applySimulatedCacheHeaders(c, businessCacheHit, clientCacheHit)
+		instance.WriteCachedResponse(c, clientResponse)
 		return
 	}
 }

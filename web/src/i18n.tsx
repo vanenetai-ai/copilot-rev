@@ -111,10 +111,12 @@ const en = {
 
   // Proxy Usage
   proxyUsage: "Proxy Usage Stats",
-  proxyUsageDesc: "Real-time request statistics from the proxy (1-hour window)",
+  proxyUsageDesc: "Real-time proxy stats with simulated business/client cache hits (1-hour window)",
   queryProxyUsage: "Query Proxy Usage",
   colTotalReqs: "Total Requests",
   colFailedReqs: "Failed",
+  colBusinessCacheHits: "Business Cache Hit",
+  colClientCacheHits: "Client Cache Hit",
   colLast429: "Last 429",
   noProxyUsage: "No proxy usage data yet",
   proxyWindow: "Window:",
@@ -140,6 +142,9 @@ const en = {
   proxySettingsDesc: "Route all outbound requests through an HTTP/HTTPS/SOCKS5 proxy",
   proxyUrlLabel: "Proxy URL:",
   proxyUrlPlaceholder: "http://host:port or socks5://host:port",
+  cacheTtlLabel: "Cache TTL:",
+  cacheTtlPlaceholder: "300",
+  cacheTtlHint: "seconds, default 300",
   proxySaved: "Saved",
   proxyClear: "Clear",
 
@@ -281,10 +286,12 @@ const zh: Translations = {
 
   // Proxy Usage
   proxyUsage: "代理用量统计",
-  proxyUsageDesc: "代理实时请求统计（1 小时滑动窗口）",
+  proxyUsageDesc: "代理实时请求统计，含业务层/客户端模拟缓存命中（1 小时滑动窗口）",
   queryProxyUsage: "查询代理用量",
   colTotalReqs: "总请求数",
   colFailedReqs: "失败",
+  colBusinessCacheHits: "业务层命中",
+  colClientCacheHits: "客户端命中",
   colLast429: "最近 429",
   noProxyUsage: "暂无代理用量数据",
   proxyWindow: "窗口：",
@@ -310,6 +317,9 @@ const zh: Translations = {
   proxySettingsDesc: "将所有出站请求通过 HTTP/HTTPS/SOCKS5 代理转发",
   proxyUrlLabel: "代理地址：",
   proxyUrlPlaceholder: "http://host:port 或 socks5://host:port",
+  cacheTtlLabel: "缓存 TTL：",
+  cacheTtlPlaceholder: "300",
+  cacheTtlHint: "单位秒，默认 300",
   proxySaved: "已保存",
   proxyClear: "清除",
 

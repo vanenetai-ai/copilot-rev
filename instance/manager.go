@@ -21,7 +21,7 @@ import (
 type ProxyInstance struct {
 	Account  store.Account
 	State    *config.State
-	Status   string // "running", "stopped", "error"
+	Status   string
 	Error    string
 	stopChan chan struct{}
 }
@@ -32,16 +32,25 @@ type CopilotUser struct {
 }
 
 func StartInstance(account store.Account) error {
+	state := config.NewState()
+	stopChan := make(chan struct{})
+	inst := &ProxyInstance{
+		Account:  account,
+		State:    state,
+		Status:   "starting",
+		stopChan: stopChan,
+	}
+
 	mu.Lock()
-	if inst, ok := instances[account.ID]; ok {
-		if inst.Status == "running" {
+	if existing, ok := instances[account.ID]; ok {
+		if existing.Status == "running" || existing.Status == "starting" {
 			mu.Unlock()
 			return nil
 		}
 	}
+	instances[account.ID] = inst
 	mu.Unlock()
 
-	state := config.NewState()
 	state.Lock()
 	state.GithubToken = account.GithubToken
 	state.AccountType = account.AccountType
@@ -53,37 +62,33 @@ func StartInstance(account store.Account) error {
 	state.VSCodeVersion = vsVer
 	state.Unlock()
 
-	// Get Copilot token
 	if err := refreshCopilotToken(state); err != nil {
 		mu.Lock()
-		instances[account.ID] = &ProxyInstance{
-			Account: account,
-			State:   state,
-			Status:  "error",
-			Error:   err.Error(),
+		if instances[account.ID] == inst && inst.Status != "stopped" {
+			inst.Status = "error"
+			inst.Error = err.Error()
 		}
 		mu.Unlock()
 		return err
 	}
 
-	// Get models
 	if err := fetchModels(state); err != nil {
 		log.Printf("Warning: failed to fetch models for account %s: %v", account.Name, err)
 	}
 
-	stopChan := make(chan struct{})
-	inst := &ProxyInstance{
-		Account:  account,
-		State:    state,
-		Status:   "running",
-		stopChan: stopChan,
+	if isStopRequested(stopChan) {
+		return nil
 	}
 
 	mu.Lock()
-	instances[account.ID] = inst
+	if instances[account.ID] != inst {
+		mu.Unlock()
+		return nil
+	}
+	inst.Status = "running"
+	inst.Error = ""
 	mu.Unlock()
 
-	// Start background token refresh
 	go tokenRefreshLoop(inst)
 
 	log.Printf("Instance started for account: %s", account.Name)
@@ -97,10 +102,11 @@ func StopInstance(accountID string) {
 		mu.Unlock()
 		return
 	}
-	if inst.Status == "running" {
+	if inst.Status != "stopped" {
 		close(inst.stopChan)
 	}
 	inst.Status = "stopped"
+	inst.Error = ""
 	mu.Unlock()
 	log.Printf("Instance stopped for account: %s", inst.Account.Name)
 }
@@ -191,7 +197,6 @@ func tokenRefreshLoop(inst *ProxyInstance) {
 	const minInterval = 30 * time.Second
 
 	for {
-		// Calculate next refresh time based on token expiry.
 		sleepDur := fallbackInterval
 		inst.State.RLock()
 		expiresAt := inst.State.TokenExpiresAt
@@ -200,13 +205,11 @@ func tokenRefreshLoop(inst *ProxyInstance) {
 		if expiresAt > 0 {
 			remaining := time.Until(time.Unix(expiresAt, 0))
 			if remaining > 0 {
-				// Refresh at 80% of token lifetime (i.e., when 20% remains).
 				sleepDur = time.Duration(float64(remaining) * 0.8)
 				if sleepDur < minInterval {
 					sleepDur = minInterval
 				}
 			} else {
-				// Token already expired, refresh immediately.
 				sleepDur = 0
 			}
 		}
@@ -221,18 +224,22 @@ func tokenRefreshLoop(inst *ProxyInstance) {
 			}
 		}
 
-		// Check stop again before doing work.
 		select {
 		case <-inst.stopChan:
 			return
 		default:
 		}
 
-		if err := refreshCopilotTokenWithRetry(inst.State, 3); err != nil {
+		if err := refreshCopilotTokenWithRetry(inst.State, inst.stopChan, 3); err != nil {
+			if err == context.Canceled {
+				return
+			}
 			log.Printf("Token refresh failed for %s: %v", inst.Account.Name, err)
 			mu.Lock()
-			inst.Status = "error"
-			inst.Error = err.Error()
+			if instances[inst.Account.ID] == inst && inst.Status != "stopped" {
+				inst.Status = "error"
+				inst.Error = err.Error()
+			}
 			mu.Unlock()
 			continue
 		}
@@ -277,16 +284,15 @@ func refreshCopilotToken(state *config.State) error {
 	return nil
 }
 
-// refreshCopilotTokenWithRetry attempts token refresh with exponential backoff.
-// Retries up to maxRetries times on failure before giving up.
-func refreshCopilotTokenWithRetry(state *config.State, maxRetries int) error {
+func refreshCopilotTokenWithRetry(state *config.State, stopChan <-chan struct{}, maxRetries int) error {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff: 2s, 8s, 18s (2 * attempt^2)
 			backoff := time.Duration(2*math.Pow(float64(attempt), 2)) * time.Second
 			log.Printf("Token refresh retry %d/%d after %v", attempt, maxRetries, backoff)
-			time.Sleep(backoff)
+			if !waitForRetry(backoff, stopChan) {
+				return context.Canceled
+			}
 		}
 		lastErr = refreshCopilotToken(state)
 		if lastErr == nil {
@@ -295,6 +301,26 @@ func refreshCopilotTokenWithRetry(state *config.State, maxRetries int) error {
 		log.Printf("Token refresh attempt %d failed: %v", attempt+1, lastErr)
 	}
 	return fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+
+func waitForRetry(backoff time.Duration, stopChan <-chan struct{}) bool {
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-stopChan:
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func isStopRequested(stopChan <-chan struct{}) bool {
+	select {
+	case <-stopChan:
+		return true
+	default:
+		return false
+	}
 }
 
 func fetchModels(state *config.State) error {

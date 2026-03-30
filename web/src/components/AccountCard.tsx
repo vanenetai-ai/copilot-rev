@@ -6,6 +6,7 @@ import { useT } from "../i18n"
 function StatusBadge({ status }: { status: string }) {
   const colorMap: Record<string, string> = {
     running: "var(--green)",
+    starting: "var(--yellow)",
     stopped: "var(--text-muted)",
     error: "var(--red)",
   }

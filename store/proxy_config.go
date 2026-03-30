@@ -6,7 +6,8 @@ import (
 )
 
 type ProxyConfig struct {
-	ProxyURL string `json:"proxyURL"`
+	ProxyURL        string `json:"proxyURL"`
+	CacheTTLSeconds int    `json:"cacheTTLSeconds"`
 }
 
 func GetProxyConfig() (ProxyConfig, error) {
@@ -19,12 +20,18 @@ func GetProxyConfig() (ProxyConfig, error) {
 	}
 	var cfg ProxyConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return ProxyConfig{}, nil
+		return ProxyConfig{CacheTTLSeconds: 300}, nil
+	}
+	if cfg.CacheTTLSeconds <= 0 {
+		cfg.CacheTTLSeconds = 300
 	}
 	return cfg, nil
 }
 
 func UpdateProxyConfig(cfg ProxyConfig) error {
+	if cfg.CacheTTLSeconds <= 0 {
+		cfg.CacheTTLSeconds = 300
+	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

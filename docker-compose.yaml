@@ -16,4 +16,4 @@ services:
 
 volumes:
   copilot-data:
-    driver: localx
+    driver: local

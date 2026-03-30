@@ -27,7 +27,7 @@ export interface Account {
   enabled: boolean
   createdAt: string
   priority: number
-  status?: "running" | "stopped" | "error"
+  status?: "running" | "starting" | "stopped" | "error"
   error?: string
   user?: { login: string } | null
 }
@@ -59,6 +59,8 @@ export interface PoolConfig {
 export interface ProxyUsageSnapshot {
   totalRequests: number
   failedRequests: number
+  businessCacheHits: number
+  clientCacheHits: number
   last429At?: string
   windowSeconds: number
 }
@@ -96,6 +98,7 @@ export interface ModelMapping {
 
 export interface ProxySettings {
   proxyURL: string
+  cacheTTLSeconds: number
 }
 
 export interface CopilotModel {

@@ -130,18 +130,24 @@ const strategyDescMap: Record<string, "roundRobinDesc" | "priorityDesc" | "least
 
 function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; onChange: (s: ProxySettings) => void }) {
   const [input, setInput] = useState(settings.proxyURL ?? "")
+  const [ttlInput, setTtlInput] = useState(String(settings.cacheTTLSeconds ?? 300))
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const t = useT()
 
   useEffect(() => {
     setInput(settings.proxyURL ?? "")
-  }, [settings.proxyURL])
+    setTtlInput(String(settings.cacheTTLSeconds ?? 300))
+  }, [settings.proxyURL, settings.cacheTTLSeconds])
 
-  const save = async (url: string) => {
+  const save = async (url: string, ttlText: string) => {
     setSaving(true)
     try {
-      const updated = await api.updateProxySettings({ proxyURL: url })
+      const parsedTTL = Number.parseInt(ttlText, 10)
+      const updated = await api.updateProxySettings({
+        proxyURL: url,
+        cacheTTLSeconds: Number.isFinite(parsedTTL) && parsedTTL > 0 ? parsedTTL : 300,
+      })
       onChange(updated)
       setSaved(true)
       setTimeout(() => setSaved(false), 1500)
@@ -151,16 +157,16 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
   }
 
   const handleBlur = () => {
-    if (!saving && input !== settings.proxyURL) void save(input)
+    if (!saving && (input !== settings.proxyURL || ttlInput !== String(settings.cacheTTLSeconds ?? 300))) void save(input, ttlInput)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") void save(input)
+    if (e.key === "Enter") void save(input, ttlInput)
   }
 
   const handleClear = () => {
     setInput("")
-    void save("")
+    void save("", ttlInput)
   }
 
   return (
@@ -183,9 +189,24 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
             {t("proxyClear")}
           </button>
         )}
-        <button type="button" className="primary" onClick={() => void save(input)} disabled={saving} style={{ padding: "4px 10px", fontSize: 12, flexShrink: 0 }}>
+        <button type="button" className="primary" onClick={() => void save(input, ttlInput)} disabled={saving} style={{ padding: "4px 10px", fontSize: 12, flexShrink: 0 }}>
           {saved ? t("proxySaved") : saving ? t("saving") : t("save")}
         </button>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+        <span style={{ fontSize: 13, color: "var(--text-muted)", flexShrink: 0 }}>{t("cacheTtlLabel")}</span>
+        <input
+          type="number"
+          min={1}
+          step={1}
+          value={ttlInput}
+          onChange={(e) => setTtlInput(e.target.value)}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
+          placeholder={t("cacheTtlPlaceholder")}
+          style={{ width: 140, fontSize: 13, padding: "4px 8px", fontFamily: "monospace" }}
+        />
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("cacheTtlHint")}</span>
       </div>
     </div>
   )
@@ -387,6 +408,8 @@ function ProxyUsagePanel({ accounts }: { accounts: Array<Account> }) {
   const [open, setOpen] = useState(false)
   const [fetched, setFetched] = useState(false)
   const t = useT()
+  const formatHitMetric = (hits: number, total: number) =>
+    `${hits} (${total > 0 ? ((hits / total) * 100).toFixed(1) : "0.0"}%)`
 
   const fetchUsage = async () => {
     setLoading(true)
@@ -401,6 +424,8 @@ function ProxyUsagePanel({ accounts }: { accounts: Array<Account> }) {
   const entries = Object.entries(data).filter(([, snap]) => snap.totalRequests > 0)
   const totalReqs = entries.reduce((sum, [, s]) => sum + s.totalRequests, 0)
   const totalFailed = entries.reduce((sum, [, s]) => sum + s.failedRequests, 0)
+  const totalBusinessHits = entries.reduce((sum, [, s]) => sum + s.businessCacheHits, 0)
+  const totalClientHits = entries.reduce((sum, [, s]) => sum + s.clientCacheHits, 0)
 
   const thStyle: React.CSSProperties = { padding: "8px 10px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }
 
@@ -426,6 +451,8 @@ function ProxyUsagePanel({ accounts }: { accounts: Array<Account> }) {
                 <th style={thStyle}>{t("colAccount")}</th>
                 <th style={thStyle}>{t("colTotalReqs")}</th>
                 <th style={thStyle}>{t("colFailedReqs")}</th>
+                <th style={thStyle}>{t("colBusinessCacheHits")}</th>
+                <th style={thStyle}>{t("colClientCacheHits")}</th>
                 <th style={thStyle}>{t("colLast429")}</th>
               </tr></thead>
               <tbody>
@@ -434,6 +461,8 @@ function ProxyUsagePanel({ accounts }: { accounts: Array<Account> }) {
                     <td style={{ padding: "8px 10px", fontSize: 13, fontWeight: 500 }}>{accountNameMap[accountId] ?? accountId.slice(0, 8)}</td>
                     <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace" }}>{snap.totalRequests}</td>
                     <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace", color: snap.failedRequests > 0 ? "var(--red)" : undefined }}>{snap.failedRequests}</td>
+                    <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace", color: snap.businessCacheHits > 0 ? "var(--green)" : undefined }}>{formatHitMetric(snap.businessCacheHits, snap.totalRequests)}</td>
+                    <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace", color: snap.clientCacheHits > 0 ? "var(--blue)" : undefined }}>{formatHitMetric(snap.clientCacheHits, snap.totalRequests)}</td>
                     <td style={{ padding: "8px 10px", fontSize: 12, color: "var(--text-muted)" }}>
                       {snap.last429At ? new Date(snap.last429At).toLocaleTimeString() : t("never")}
                     </td>
@@ -443,6 +472,8 @@ function ProxyUsagePanel({ accounts }: { accounts: Array<Account> }) {
                   <td style={{ padding: "8px 10px", fontSize: 13 }}>{t("totalSummary")}</td>
                   <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace" }}>{totalReqs}</td>
                   <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace", color: totalFailed > 0 ? "var(--red)" : undefined }}>{totalFailed}</td>
+                  <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace", color: totalBusinessHits > 0 ? "var(--green)" : undefined }}>{formatHitMetric(totalBusinessHits, totalReqs)}</td>
+                  <td style={{ padding: "8px 10px", fontSize: 12, fontFamily: "monospace", color: totalClientHits > 0 ? "var(--blue)" : undefined }}>{formatHitMetric(totalClientHits, totalReqs)}</td>
                   <td />
                 </tr>
               </tbody>
@@ -838,7 +869,7 @@ function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [proxyPort, setProxyPort] = useState(4141)
   const [pool, setPool] = useState<PoolConfig>({ enabled: false, strategy: "round-robin" } as PoolConfig)
-  const [proxySettings, setProxySettings] = useState<ProxySettings>({ proxyURL: "" })
+  const [proxySettings, setProxySettings] = useState<ProxySettings>({ proxyURL: "", cacheTTLSeconds: 300 })
   const t = useT()
 
   const refresh = useCallback(async () => {

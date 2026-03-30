@@ -97,14 +97,15 @@ func LoginAdmin(username, password string) (string, error) {
 
 func ValidateSession(token string) bool {
 	sessionsMu.RLock()
-	defer sessionsMu.RUnlock()
-
 	session, ok := sessions[token]
+	sessionsMu.RUnlock()
 	if !ok {
 		return false
 	}
 	if time.Now().After(session.ExpiresAt) {
+		sessionsMu.Lock()
 		delete(sessions, token)
+		sessionsMu.Unlock()
 		return false
 	}
 	return true

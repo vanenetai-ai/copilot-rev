@@ -2,6 +2,7 @@ package instance
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"copilot-go/anthropic"
 	"copilot-go/config"
@@ -26,45 +28,12 @@ func DoCompletionsProxy(_ *gin.Context, state *config.State, bodyBytes []byte) (
 
 // ForwardCompletionsResponse writes the upstream response to the client.
 func ForwardCompletionsResponse(c *gin.Context, resp *http.Response) {
-	defer func() { _ = resp.Body.Close() }()
-
-	contentType := resp.Header.Get("Content-Type")
-	isStream := strings.Contains(contentType, "text/event-stream")
-
-	if isStream {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("X-Accel-Buffering", "no")
-		c.Status(resp.StatusCode)
-
-		reader := bufio.NewReaderSize(resp.Body, 10*1024*1024)
-		c.Stream(func(w io.Writer) bool {
-			line, err := reader.ReadBytes('\n')
-			if len(line) > 0 {
-				if _, writeErr := w.Write(line); writeErr != nil {
-					return false
-				}
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
-				}
-			}
-			if err != nil {
-				if err != io.EOF {
-					log.Printf("Stream read error: %v", err)
-				}
-				return false
-			}
-			return true
-		})
-	} else {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
-			return
-		}
-		c.Data(resp.StatusCode, "application/json", body)
+	clientResponse, err := BuildCompletionsClientResponse(resp)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
+		return
 	}
+	WriteCachedResponse(c, clientResponse)
 }
 
 // ModelsHandler returns cached models with display ID mapping.
@@ -116,14 +85,12 @@ func DoEmbeddingsProxy(state *config.State, bodyBytes []byte) (*http.Response, e
 
 // ForwardEmbeddingsResponse writes the upstream embeddings response to the client.
 func ForwardEmbeddingsResponse(c *gin.Context, resp *http.Response) {
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(resp.Body)
+	clientResponse, err := BuildEmbeddingsClientResponse(resp)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
 	}
-	c.Data(resp.StatusCode, "application/json", body)
+	WriteCachedResponse(c, clientResponse)
 }
 
 // DoMessagesProxy performs the upstream request for Anthropic messages.
@@ -159,19 +126,12 @@ func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*ht
 // ForwardMessagesResponse writes the upstream response to the client in Anthropic format.
 // originalBody is the original Anthropic request (used to determine stream mode).
 func ForwardMessagesResponse(c *gin.Context, resp *http.Response, originalBody []byte) {
-	defer func() { _ = resp.Body.Close() }()
-
-	var anthropicPayload anthropic.AnthropicMessagesPayload
-	if err := json.Unmarshal(originalBody, &anthropicPayload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
+	clientResponse, err := BuildMessagesClientResponse(resp, originalBody)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-
-	if anthropicPayload.Stream {
-		handleAnthropicStream(c, resp)
-	} else {
-		handleAnthropicNonStream(c, resp)
-	}
+	WriteCachedResponse(c, clientResponse)
 }
 
 func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
@@ -194,6 +154,28 @@ func handleAnthropicNonStream(c *gin.Context, resp *http.Response) {
 
 	anthropicResp := anthropic.TranslateToAnthropic(openaiResp)
 	c.JSON(http.StatusOK, anthropicResp)
+}
+
+func BuildCompletionsClientResponse(resp *http.Response) (*CachedResponse, error) {
+	return buildRawClientResponse(resp)
+}
+
+func BuildEmbeddingsClientResponse(resp *http.Response) (*CachedResponse, error) {
+	return buildRawClientResponse(resp)
+}
+
+func BuildMessagesClientResponse(resp *http.Response, originalBody []byte) (*CachedResponse, error) {
+	defer func() { _ = resp.Body.Close() }()
+
+	var anthropicPayload anthropic.AnthropicMessagesPayload
+	if err := json.Unmarshal(originalBody, &anthropicPayload); err != nil {
+		return nil, fmt.Errorf("invalid request: %v", err)
+	}
+
+	if anthropicPayload.Stream {
+		return buildAnthropicStreamResponse(resp)
+	}
+	return buildAnthropicNonStreamResponse(resp)
 }
 
 func handleAnthropicStream(c *gin.Context, resp *http.Response) {
@@ -279,6 +261,142 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response) {
 	if hasFlusher {
 		flusher.Flush()
 	}
+}
+
+func buildAnthropicNonStreamResponse(resp *http.Response) (*CachedResponse, error) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return &CachedResponse{
+			StatusCode:  resp.StatusCode,
+			ContentType: "application/json",
+			Body:        body,
+			StoredAt:    time.Now(),
+		}, nil
+	}
+
+	var openaiResp anthropic.ChatCompletionResponse
+	if err := json.Unmarshal(body, &openaiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse upstream response")
+	}
+
+	anthropicResp := anthropic.TranslateToAnthropic(openaiResp)
+	clientBody, err := json.Marshal(anthropicResp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CachedResponse{
+		StatusCode:  http.StatusOK,
+		ContentType: "application/json",
+		Body:        clientBody,
+		StoredAt:    time.Now(),
+	}, nil
+}
+
+func buildAnthropicStreamResponse(resp *http.Response) (*CachedResponse, error) {
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return &CachedResponse{
+			StatusCode:  resp.StatusCode,
+			ContentType: "application/json",
+			Body:        body,
+			StoredAt:    time.Now(),
+		}, nil
+	}
+
+	var buffer bytes.Buffer
+	state := anthropic.NewStreamState()
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 10*1024*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			if err := writeSSE(&buffer, "message_stop", map[string]string{"type": "message_stop"}); err != nil {
+				return nil, err
+			}
+			return &CachedResponse{
+				StatusCode:  http.StatusOK,
+				ContentType: "text/event-stream",
+				Body:        buffer.Bytes(),
+				IsStream:    true,
+				StoredAt:    time.Now(),
+			}, nil
+		}
+
+		var chunk anthropic.ChatCompletionResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.Printf("[Stream] Failed to parse SSE chunk: %v", err)
+			continue
+		}
+
+		events := anthropic.TranslateChunkToAnthropicEvents(chunk, state)
+		for _, event := range events {
+			if err := writeSSE(&buffer, event.Event, event.Data); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		if writeErr := writeSSE(&buffer, "error", map[string]interface{}{
+			"type": "error",
+			"error": map[string]string{
+				"type":    "stream_error",
+				"message": fmt.Sprintf("upstream stream error: %v", err),
+			},
+		}); writeErr != nil {
+			return nil, writeErr
+		}
+	} else {
+		if err := writeSSE(&buffer, "message_stop", map[string]string{"type": "message_stop"}); err != nil {
+			return nil, err
+		}
+	}
+
+	return &CachedResponse{
+		StatusCode:  http.StatusOK,
+		ContentType: "text/event-stream",
+		Body:        buffer.Bytes(),
+		IsStream:    true,
+		StoredAt:    time.Now(),
+	}, nil
+}
+
+func buildRawClientResponse(resp *http.Response) (*CachedResponse, error) {
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	isStream := strings.Contains(contentType, "text/event-stream")
+	if contentType == "" {
+		if isStream {
+			contentType = "text/event-stream"
+		} else {
+			contentType = "application/json"
+		}
+	}
+
+	return &CachedResponse{
+		StatusCode:  resp.StatusCode,
+		ContentType: contentType,
+		Body:        body,
+		IsStream:    isStream,
+		StoredAt:    time.Now(),
+	}, nil
 }
 
 func normalizeCompletionsPayload(state *config.State, bodyBytes []byte) ([]byte, http.Header, bool) {

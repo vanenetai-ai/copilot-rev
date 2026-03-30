@@ -17,6 +17,7 @@ import (
 )
 
 type AuthSession struct {
+	mu              sync.RWMutex `json:"-"`
 	ID              string    `json:"id"`
 	DeviceCode      string    `json:"deviceCode"`
 	UserCode        string    `json:"userCode"`
@@ -111,11 +112,12 @@ func StartDeviceFlow() (*AuthSession, error) {
 
 	go pollForToken(session)
 
-	return session, nil
+	snapshot := session.snapshot()
+	return &snapshot, nil
 }
 
 func pollForToken(session *AuthSession) {
-	interval := time.Duration(session.Interval) * time.Second
+	interval := time.Duration(session.getInterval()) * time.Second
 	log.Printf("[DeviceFlow] Poll goroutine started for session %s, interval=%v", session.ID, interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -123,17 +125,15 @@ func pollForToken(session *AuthSession) {
 	for {
 		select {
 		case <-ticker.C:
-			if time.Now().After(session.ExpiresAt) {
+			if time.Now().After(session.getExpiresAt()) {
 				log.Printf("[DeviceFlow] Session %s expired", session.ID)
-				session.Status = "expired"
-				session.Error = "device code expired"
+				session.setExpired("device code expired")
 				authSessions.Store(session.ID, session)
 				return
 			}
 
-			token, err := requestToken(session.DeviceCode)
+			token, err := requestToken(session.getDeviceCode())
 			if err != nil {
-				// Handle slow_down: increase interval and reset ticker
 				var sd *errSlowDown
 				if errors.As(err, &sd) {
 					interval = time.Duration(sd.Interval) * time.Second
@@ -147,8 +147,7 @@ func pollForToken(session *AuthSession) {
 
 			if token != "" {
 				log.Printf("[DeviceFlow] Session %s got token (len=%d)", session.ID, len(token))
-				session.Status = "completed"
-				session.AccessToken = token
+				session.setCompleted(token)
 				authSessions.Store(session.ID, session)
 				return
 			}
@@ -212,9 +211,59 @@ func GetSession(sessionID string) *AuthSession {
 	if !ok {
 		return nil
 	}
-	return v.(*AuthSession)
+	snapshot := v.(*AuthSession).snapshot()
+	return &snapshot
 }
 
 func CleanupSession(sessionID string) {
 	authSessions.Delete(sessionID)
+}
+
+func (s *AuthSession) getInterval() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Interval
+}
+
+func (s *AuthSession) getExpiresAt() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ExpiresAt
+}
+
+func (s *AuthSession) getDeviceCode() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.DeviceCode
+}
+
+func (s *AuthSession) setExpired(message string) {
+	s.mu.Lock()
+	s.Status = "expired"
+	s.Error = message
+	s.mu.Unlock()
+}
+
+func (s *AuthSession) setCompleted(token string) {
+	s.mu.Lock()
+	s.Status = "completed"
+	s.AccessToken = token
+	s.Error = ""
+	s.mu.Unlock()
+}
+
+func (s *AuthSession) snapshot() AuthSession {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return AuthSession{
+		ID:              s.ID,
+		DeviceCode:      s.DeviceCode,
+		UserCode:        s.UserCode,
+		VerificationURI: s.VerificationURI,
+		ExpiresAt:       s.ExpiresAt,
+		Interval:        s.Interval,
+		Status:          s.Status,
+		AccessToken:     s.AccessToken,
+		Error:           s.Error,
+	}
 }
