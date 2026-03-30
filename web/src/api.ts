@@ -99,6 +99,10 @@ export interface ModelMapping {
 export interface ProxySettings {
   proxyURL: string
   cacheTTLSeconds: number
+  businessCacheHitRate: number
+  clientCacheHitRate: number
+  cacheHitRateJitter: number
+  cacheMaxHitRate: number
 }
 
 export interface CopilotModel {

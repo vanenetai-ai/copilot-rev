@@ -131,6 +131,10 @@ const strategyDescMap: Record<string, "roundRobinDesc" | "priorityDesc" | "least
 function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; onChange: (s: ProxySettings) => void }) {
   const [input, setInput] = useState(settings.proxyURL ?? "")
   const [ttlInput, setTtlInput] = useState(String(settings.cacheTTLSeconds ?? 300))
+  const [businessRateInput, setBusinessRateInput] = useState(String(settings.businessCacheHitRate ?? 4))
+  const [clientRateInput, setClientRateInput] = useState(String(settings.clientCacheHitRate ?? 2))
+  const [jitterInput, setJitterInput] = useState(String(settings.cacheHitRateJitter ?? 8))
+  const [maxRateInput, setMaxRateInput] = useState(String(settings.cacheMaxHitRate ?? 92))
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const t = useT()
@@ -138,15 +142,27 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
   useEffect(() => {
     setInput(settings.proxyURL ?? "")
     setTtlInput(String(settings.cacheTTLSeconds ?? 300))
-  }, [settings.proxyURL, settings.cacheTTLSeconds])
+    setBusinessRateInput(String(settings.businessCacheHitRate ?? 4))
+    setClientRateInput(String(settings.clientCacheHitRate ?? 2))
+    setJitterInput(String(settings.cacheHitRateJitter ?? 8))
+    setMaxRateInput(String(settings.cacheMaxHitRate ?? 92))
+  }, [settings.proxyURL, settings.cacheTTLSeconds, settings.businessCacheHitRate, settings.clientCacheHitRate, settings.cacheHitRateJitter, settings.cacheMaxHitRate])
 
-  const save = async (url: string, ttlText: string) => {
+  const save = async (url: string, ttlText: string, businessRateText: string, clientRateText: string, jitterText: string, maxRateText: string) => {
     setSaving(true)
     try {
       const parsedTTL = Number.parseInt(ttlText, 10)
+      const parsedBusinessRate = Number.parseInt(businessRateText, 10)
+      const parsedClientRate = Number.parseInt(clientRateText, 10)
+      const parsedJitter = Number.parseInt(jitterText, 10)
+      const parsedMaxRate = Number.parseInt(maxRateText, 10)
       const updated = await api.updateProxySettings({
         proxyURL: url,
-        cacheTTLSeconds: Number.isFinite(parsedTTL) && parsedTTL > 0 ? parsedTTL : 300,
+        cacheTTLSeconds: Number.isFinite(parsedTTL) && parsedTTL >= 0 ? parsedTTL : 300,
+        businessCacheHitRate: Number.isFinite(parsedBusinessRate) && parsedBusinessRate >= 0 ? parsedBusinessRate : 4,
+        clientCacheHitRate: Number.isFinite(parsedClientRate) && parsedClientRate >= 0 ? parsedClientRate : 2,
+        cacheHitRateJitter: Number.isFinite(parsedJitter) && parsedJitter >= 0 ? parsedJitter : 8,
+        cacheMaxHitRate: Number.isFinite(parsedMaxRate) && parsedMaxRate > 0 ? parsedMaxRate : 92,
       })
       onChange(updated)
       setSaved(true)
@@ -157,16 +173,23 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
   }
 
   const handleBlur = () => {
-    if (!saving && (input !== settings.proxyURL || ttlInput !== String(settings.cacheTTLSeconds ?? 300))) void save(input, ttlInput)
+    if (!saving && (
+      input !== settings.proxyURL ||
+      ttlInput !== String(settings.cacheTTLSeconds ?? 300) ||
+      businessRateInput !== String(settings.businessCacheHitRate ?? 4) ||
+      clientRateInput !== String(settings.clientCacheHitRate ?? 2) ||
+      jitterInput !== String(settings.cacheHitRateJitter ?? 8) ||
+      maxRateInput !== String(settings.cacheMaxHitRate ?? 92)
+    )) void save(input, ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") void save(input, ttlInput)
+    if (e.key === "Enter") void save(input, ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput)
   }
 
   const handleClear = () => {
     setInput("")
-    void save("", ttlInput)
+    void save("", ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput)
   }
 
   return (
@@ -189,7 +212,7 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
             {t("proxyClear")}
           </button>
         )}
-        <button type="button" className="primary" onClick={() => void save(input, ttlInput)} disabled={saving} style={{ padding: "4px 10px", fontSize: 12, flexShrink: 0 }}>
+        <button type="button" className="primary" onClick={() => void save(input, ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput)} disabled={saving} style={{ padding: "4px 10px", fontSize: 12, flexShrink: 0 }}>
           {saved ? t("proxySaved") : saving ? t("saving") : t("save")}
         </button>
       </div>
@@ -197,7 +220,7 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
         <span style={{ fontSize: 13, color: "var(--text-muted)", flexShrink: 0 }}>{t("cacheTtlLabel")}</span>
         <input
           type="number"
-          min={1}
+          min={0}
           step={1}
           value={ttlInput}
           onChange={(e) => setTtlInput(e.target.value)}
@@ -208,6 +231,17 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
         />
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("cacheTtlHint")}</span>
       </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, color: "var(--text-muted)", flexShrink: 0 }}>{t("businessCacheRateLabel")}</span>
+        <input type="number" min={0} max={100} step={1} value={businessRateInput} onChange={(e) => setBusinessRateInput(e.target.value)} onBlur={handleBlur} onKeyDown={handleKeyDown} placeholder={t("businessCacheRatePlaceholder")} style={{ width: 84, fontSize: 13, padding: "4px 8px", fontFamily: "monospace" }} />
+        <span style={{ fontSize: 13, color: "var(--text-muted)", flexShrink: 0 }}>{t("clientCacheRateLabel")}</span>
+        <input type="number" min={0} max={100} step={1} value={clientRateInput} onChange={(e) => setClientRateInput(e.target.value)} onBlur={handleBlur} onKeyDown={handleKeyDown} placeholder={t("clientCacheRatePlaceholder")} style={{ width: 84, fontSize: 13, padding: "4px 8px", fontFamily: "monospace" }} />
+        <span style={{ fontSize: 13, color: "var(--text-muted)", flexShrink: 0 }}>{t("cacheJitterLabel")}</span>
+        <input type="number" min={0} max={100} step={1} value={jitterInput} onChange={(e) => setJitterInput(e.target.value)} onBlur={handleBlur} onKeyDown={handleKeyDown} placeholder={t("cacheJitterPlaceholder")} style={{ width: 84, fontSize: 13, padding: "4px 8px", fontFamily: "monospace" }} />
+        <span style={{ fontSize: 13, color: "var(--text-muted)", flexShrink: 0 }}>{t("cacheMaxRateLabel")}</span>
+        <input type="number" min={1} max={100} step={1} value={maxRateInput} onChange={(e) => setMaxRateInput(e.target.value)} onBlur={handleBlur} onKeyDown={handleKeyDown} placeholder={t("cacheMaxRatePlaceholder")} style={{ width: 84, fontSize: 13, padding: "4px 8px", fontFamily: "monospace" }} />
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>{t("cacheRateHint")}</div>
     </div>
   )
 }
@@ -869,7 +903,7 @@ function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [proxyPort, setProxyPort] = useState(4141)
   const [pool, setPool] = useState<PoolConfig>({ enabled: false, strategy: "round-robin" } as PoolConfig)
-  const [proxySettings, setProxySettings] = useState<ProxySettings>({ proxyURL: "", cacheTTLSeconds: 300 })
+  const [proxySettings, setProxySettings] = useState<ProxySettings>({ proxyURL: "", cacheTTLSeconds: 300, businessCacheHitRate: 4, clientCacheHitRate: 2, cacheHitRateJitter: 8, cacheMaxHitRate: 92 })
   const t = useT()
 
   const refresh = useCallback(async () => {

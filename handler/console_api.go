@@ -639,8 +639,8 @@ func handleUpdateProxyConfig(c *gin.Context) {
 			return
 		}
 	}
-	if cfg.CacheTTLSeconds <= 0 {
-		cfg.CacheTTLSeconds = 300
+	if cfg.CacheTTLSeconds < 0 {
+		cfg.CacheTTLSeconds = 0
 	}
 	if err := store.UpdateProxyConfig(cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -649,6 +649,12 @@ func handleUpdateProxyConfig(c *gin.Context) {
 	config.SetProxyURL(cfg.ProxyURL)
 	instance.RebuildHTTPClients()
 	instance.SetResponseCacheTTLSeconds(cfg.CacheTTLSeconds)
+	instance.SetCacheSimulationConfig(
+		cfg.BusinessCacheHitRate,
+		cfg.ClientCacheHitRate,
+		cfg.CacheHitRateJitter,
+		cfg.CacheMaxHitRate,
+	)
 	c.JSON(http.StatusOK, cfg)
 }
 

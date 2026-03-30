@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -55,7 +56,15 @@ var (
 	usageMapMu        sync.RWMutex
 	simulationRandMu  sync.Mutex
 	simulationRandSrc = rand.New(rand.NewSource(time.Now().UnixNano()))
+	businessBaseRate  atomic.Int64
+	clientBaseRate    atomic.Int64
+	jitterRange       atomic.Int64
+	maxHitRate        atomic.Int64
 )
+
+func init() {
+	SetCacheSimulationConfig(4, 2, 8, 92)
+}
 
 func getOrCreateUsage(accountID string) *AccountUsage {
 	usageMapMu.RLock()
@@ -273,9 +282,9 @@ func detectPromptCacheHit(accountID, operation string, bodyBytes []byte, clientS
 }
 
 func calculatePromptHitProbability(operation string, bodySize int, now time.Time, profile *promptProfile, clientSide bool) float64 {
-	probability := 0.04
+	probability := float64(businessBaseRate.Load()) / 100
 	if clientSide {
-		probability = 0.02
+		probability = float64(clientBaseRate.Load()) / 100
 	}
 
 	if !profile.LastSeen.IsZero() {
@@ -324,7 +333,7 @@ func calculatePromptHitProbability(operation string, bodySize int, now time.Time
 		probability += 0.04
 	}
 
-	jitter := (randomFloat64() - 0.5) * 0.16
+	jitter := (randomFloat64() - 0.5) * 2 * (float64(jitterRange.Load()) / 100)
 	probability += jitter
 	return clampProbability(probability)
 }
@@ -340,11 +349,42 @@ func randomChance(probability float64) bool {
 }
 
 func clampProbability(probability float64) float64 {
-	if probability < 0.01 {
-		return 0.01
+	if probability < 0 {
+		return 0
 	}
-	if probability > 0.92 {
-		return 0.92
+	upperBound := float64(maxHitRate.Load()) / 100
+	if probability > upperBound {
+		return upperBound
 	}
 	return probability
+}
+
+func SetCacheSimulationConfig(businessRate int, clientRate int, jitter int, maxRate int) {
+	businessBaseRate.Store(int64(normalizePercent(businessRate, 4)))
+	clientBaseRate.Store(int64(normalizePercent(clientRate, 2)))
+	jitterRange.Store(int64(normalizePercent(jitter, 8)))
+	maxHitRate.Store(int64(normalizeMaxHitRate(maxRate)))
+}
+
+func normalizePercent(value int, fallback int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	if value == 0 && fallback > 0 {
+		return 0
+	}
+	return value
+}
+
+func normalizeMaxHitRate(value int) int {
+	if value <= 0 {
+		return 92
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
 }

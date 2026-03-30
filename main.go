@@ -33,6 +33,12 @@ func main() {
 	// Load proxy config and apply to HTTP clients
 	if proxyCfg, err := store.GetProxyConfig(); err == nil {
 		instance.SetResponseCacheTTLSeconds(proxyCfg.CacheTTLSeconds)
+		instance.SetCacheSimulationConfig(
+			proxyCfg.BusinessCacheHitRate,
+			proxyCfg.ClientCacheHitRate,
+			proxyCfg.CacheHitRateJitter,
+			proxyCfg.CacheMaxHitRate,
+		)
 		if proxyCfg.ProxyURL != "" {
 			config.SetProxyURL(proxyCfg.ProxyURL)
 			instance.RebuildHTTPClients()

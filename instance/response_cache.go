@@ -33,6 +33,9 @@ func GetCachedResponse(accountID, operation string, bodyBytes []byte) (*CachedRe
 	key := buildResponseCacheKey(accountID, operation, bodyBytes)
 	now := time.Now()
 	ttl := getResponseCacheTTL()
+	if ttl <= 0 {
+		return nil, false
+	}
 
 	responseCacheMu.RLock()
 	cached, ok := responseCache[key]
@@ -51,6 +54,9 @@ func GetCachedResponse(accountID, operation string, bodyBytes []byte) (*CachedRe
 
 func StoreCachedResponse(accountID, operation string, bodyBytes []byte, response *CachedResponse) {
 	if response == nil || response.StatusCode != http.StatusOK || len(response.Body) == 0 {
+		return
+	}
+	if getResponseCacheTTL() <= 0 {
 		return
 	}
 	key := buildResponseCacheKey(accountID, operation, bodyBytes)
@@ -104,6 +110,10 @@ func cloneCachedResponse(response *CachedResponse) *CachedResponse {
 
 func pruneExpiredResponsesLocked(now time.Time) {
 	ttl := getResponseCacheTTL()
+	if ttl <= 0 {
+		clear(responseCache)
+		return
+	}
 	for key, cached := range responseCache {
 		if now.Sub(cached.StoredAt) > ttl {
 			delete(responseCache, key)
@@ -112,8 +122,8 @@ func pruneExpiredResponsesLocked(now time.Time) {
 }
 
 func SetResponseCacheTTLSeconds(ttlSeconds int) {
-	if ttlSeconds <= 0 {
-		ttlSeconds = 300
+	if ttlSeconds < 0 {
+		ttlSeconds = 0
 	}
 	responseCacheTTLSeconds.Store(int64(ttlSeconds))
 	responseCacheMu.Lock()
@@ -128,7 +138,7 @@ func GetResponseCacheTTLSeconds() int {
 func getResponseCacheTTL() time.Duration {
 	ttlSeconds := responseCacheTTLSeconds.Load()
 	if ttlSeconds <= 0 {
-		ttlSeconds = 300
+		return 0
 	}
 	return time.Duration(ttlSeconds) * time.Second
 }
