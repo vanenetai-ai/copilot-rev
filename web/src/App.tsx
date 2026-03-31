@@ -135,6 +135,9 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
   const [clientRateInput, setClientRateInput] = useState(String(settings.clientCacheHitRate ?? 2))
   const [jitterInput, setJitterInput] = useState(String(settings.cacheHitRateJitter ?? 8))
   const [maxRateInput, setMaxRateInput] = useState(String(settings.cacheMaxHitRate ?? 92))
+  const [responsesWebSearchEnabled, setResponsesWebSearchEnabled] = useState(settings.responsesApiWebSearchEnabled ?? true)
+  const [responsesApplyPatchEnabled, setResponsesApplyPatchEnabled] = useState(settings.responsesFunctionApplyPatchEnabled ?? true)
+  const [preferNativeMessagesByModel, setPreferNativeMessagesByModel] = useState(settings.preferNativeMessagesByModel ?? true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const t = useT()
@@ -146,9 +149,12 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
     setClientRateInput(String(settings.clientCacheHitRate ?? 2))
     setJitterInput(String(settings.cacheHitRateJitter ?? 8))
     setMaxRateInput(String(settings.cacheMaxHitRate ?? 92))
-  }, [settings.proxyURL, settings.cacheTTLSeconds, settings.businessCacheHitRate, settings.clientCacheHitRate, settings.cacheHitRateJitter, settings.cacheMaxHitRate])
+    setResponsesWebSearchEnabled(settings.responsesApiWebSearchEnabled ?? true)
+    setResponsesApplyPatchEnabled(settings.responsesFunctionApplyPatchEnabled ?? true)
+    setPreferNativeMessagesByModel(settings.preferNativeMessagesByModel ?? true)
+  }, [settings.proxyURL, settings.cacheTTLSeconds, settings.businessCacheHitRate, settings.clientCacheHitRate, settings.cacheHitRateJitter, settings.cacheMaxHitRate, settings.responsesApiWebSearchEnabled, settings.responsesFunctionApplyPatchEnabled, settings.preferNativeMessagesByModel])
 
-  const save = async (url: string, ttlText: string, businessRateText: string, clientRateText: string, jitterText: string, maxRateText: string) => {
+  const save = async (url: string, ttlText: string, businessRateText: string, clientRateText: string, jitterText: string, maxRateText: string, webSearchEnabled: boolean, applyPatchEnabled: boolean, preferNativeMessages: boolean) => {
     setSaving(true)
     try {
       const parsedTTL = Number.parseInt(ttlText, 10)
@@ -156,13 +162,18 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
       const parsedClientRate = Number.parseInt(clientRateText, 10)
       const parsedJitter = Number.parseInt(jitterText, 10)
       const parsedMaxRate = Number.parseInt(maxRateText, 10)
+      const normalizedTTL = Number.isFinite(parsedTTL) && parsedTTL >= 0 ? parsedTTL : 300
       const updated = await api.updateProxySettings({
         proxyURL: url,
-        cacheTTLSeconds: Number.isFinite(parsedTTL) && parsedTTL >= 0 ? parsedTTL : 300,
+        cacheEnabled: normalizedTTL > 0,
+        cacheTTLSeconds: normalizedTTL,
         businessCacheHitRate: Number.isFinite(parsedBusinessRate) && parsedBusinessRate >= 0 ? parsedBusinessRate : 4,
         clientCacheHitRate: Number.isFinite(parsedClientRate) && parsedClientRate >= 0 ? parsedClientRate : 2,
         cacheHitRateJitter: Number.isFinite(parsedJitter) && parsedJitter >= 0 ? parsedJitter : 8,
         cacheMaxHitRate: Number.isFinite(parsedMaxRate) && parsedMaxRate > 0 ? parsedMaxRate : 92,
+        responsesApiWebSearchEnabled: webSearchEnabled,
+        responsesFunctionApplyPatchEnabled: applyPatchEnabled,
+        preferNativeMessagesByModel: preferNativeMessages,
       })
       onChange(updated)
       setSaved(true)
@@ -179,17 +190,20 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
       businessRateInput !== String(settings.businessCacheHitRate ?? 4) ||
       clientRateInput !== String(settings.clientCacheHitRate ?? 2) ||
       jitterInput !== String(settings.cacheHitRateJitter ?? 8) ||
-      maxRateInput !== String(settings.cacheMaxHitRate ?? 92)
-    )) void save(input, ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput)
+      maxRateInput !== String(settings.cacheMaxHitRate ?? 92) ||
+      responsesWebSearchEnabled !== (settings.responsesApiWebSearchEnabled ?? true) ||
+      responsesApplyPatchEnabled !== (settings.responsesFunctionApplyPatchEnabled ?? true) ||
+      preferNativeMessagesByModel !== (settings.preferNativeMessagesByModel ?? true)
+    )) void save(input, ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput, responsesWebSearchEnabled, responsesApplyPatchEnabled, preferNativeMessagesByModel)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") void save(input, ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput)
+    if (e.key === "Enter") void save(input, ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput, responsesWebSearchEnabled, responsesApplyPatchEnabled, preferNativeMessagesByModel)
   }
 
   const handleClear = () => {
     setInput("")
-    void save("", ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput)
+    void save("", ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput, responsesWebSearchEnabled, responsesApplyPatchEnabled, preferNativeMessagesByModel)
   }
 
   return (
@@ -212,7 +226,7 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
             {t("proxyClear")}
           </button>
         )}
-        <button type="button" className="primary" onClick={() => void save(input, ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput)} disabled={saving} style={{ padding: "4px 10px", fontSize: 12, flexShrink: 0 }}>
+        <button type="button" className="primary" onClick={() => void save(input, ttlInput, businessRateInput, clientRateInput, jitterInput, maxRateInput, responsesWebSearchEnabled, responsesApplyPatchEnabled, preferNativeMessagesByModel)} disabled={saving} style={{ padding: "4px 10px", fontSize: 12, flexShrink: 0 }}>
           {saved ? t("proxySaved") : saving ? t("saving") : t("save")}
         </button>
       </div>
@@ -242,6 +256,36 @@ function ProxySettingsPanel({ settings, onChange }: { settings: ProxySettings; o
         <input type="number" min={1} max={100} step={1} value={maxRateInput} onChange={(e) => setMaxRateInput(e.target.value)} onBlur={handleBlur} onKeyDown={handleKeyDown} placeholder={t("cacheMaxRatePlaceholder")} style={{ width: 84, fontSize: 13, padding: "4px 8px", fontFamily: "monospace" }} />
       </div>
       <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>{t("cacheRateHint")}</div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13, color: "var(--text-muted)" }}>
+        <input
+          type="checkbox"
+          checked={responsesWebSearchEnabled}
+          onChange={(e) => setResponsesWebSearchEnabled(e.target.checked)}
+          onBlur={handleBlur}
+        />
+        <span>{t("responsesWebSearchToggle")}</span>
+      </label>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>{t("responsesWebSearchHint")}</div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13, color: "var(--text-muted)" }}>
+        <input
+          type="checkbox"
+          checked={responsesApplyPatchEnabled}
+          onChange={(e) => setResponsesApplyPatchEnabled(e.target.checked)}
+          onBlur={handleBlur}
+        />
+        <span>{t("responsesApplyPatchToggle")}</span>
+      </label>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>{t("responsesApplyPatchHint")}</div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13, color: "var(--text-muted)" }}>
+        <input
+          type="checkbox"
+          checked={preferNativeMessagesByModel}
+          onChange={(e) => setPreferNativeMessagesByModel(e.target.checked)}
+          onBlur={handleBlur}
+        />
+        <span>{t("preferNativeMessagesToggle")}</span>
+      </label>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>{t("preferNativeMessagesHint")}</div>
     </div>
   )
 }
@@ -903,7 +947,7 @@ function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [proxyPort, setProxyPort] = useState(4141)
   const [pool, setPool] = useState<PoolConfig>({ enabled: false, strategy: "round-robin" } as PoolConfig)
-  const [proxySettings, setProxySettings] = useState<ProxySettings>({ proxyURL: "", cacheTTLSeconds: 300, businessCacheHitRate: 4, clientCacheHitRate: 2, cacheHitRateJitter: 8, cacheMaxHitRate: 92 })
+  const [proxySettings, setProxySettings] = useState<ProxySettings>({ proxyURL: "", cacheEnabled: true, cacheTTLSeconds: 300, businessCacheHitRate: 4, clientCacheHitRate: 2, cacheHitRateJitter: 8, cacheMaxHitRate: 92, responsesApiWebSearchEnabled: true, responsesFunctionApplyPatchEnabled: true, preferNativeMessagesByModel: true })
   const t = useT()
 
   const refresh = useCallback(async () => {

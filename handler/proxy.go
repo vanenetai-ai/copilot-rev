@@ -610,7 +610,7 @@ func proxyMessages(c *gin.Context) {
 			return
 		}
 
-		resp, proxyErr := instance.DoMessagesProxy(c, resolved.State, bodyBytes)
+		resp, nativeMessages, proxyErr := instance.DoMessagesProxy(c, resolved.State, bodyBytes)
 		if proxyErr != nil {
 			if resp != nil {
 				_ = resp.Body.Close()
@@ -644,7 +644,7 @@ func proxyMessages(c *gin.Context) {
 			continue
 		}
 
-		clientResponse, buildErr := instance.BuildMessagesClientResponse(resp, bodyBytes)
+		clientResponse, buildErr := instance.BuildMessagesClientResponse(resp, bodyBytes, nativeMessages)
 		if buildErr != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to build response: %v", buildErr)})
 			return

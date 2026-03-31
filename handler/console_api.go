@@ -655,6 +655,9 @@ func handleUpdateProxyConfig(c *gin.Context) {
 		cfg.CacheHitRateJitter,
 		cfg.CacheMaxHitRate,
 	)
+	instance.SetResponsesAPIWebSearchEnabled(cfg.ResponsesApiWebSearchEnabled)
+	instance.SetResponsesFunctionApplyPatchEnabled(cfg.ResponsesFunctionApplyPatchEnabled)
+	instance.SetPreferNativeMessagesByModel(cfg.PreferNativeMessagesByModel)
 	c.JSON(http.StatusOK, cfg)
 }
 

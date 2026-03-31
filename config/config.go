@@ -75,14 +75,15 @@ type ModelLimits struct {
 }
 
 type ModelEntry struct {
-	ID           string             `json:"id"`
-	Object       string             `json:"object"`
-	Created      int64              `json:"created"`
-	OwnedBy      string             `json:"owned_by"`
-	Name         string             `json:"name,omitempty"`
-	Version      string             `json:"version,omitempty"`
-	Vendor       string             `json:"vendor,omitempty"`
-	Capabilities *ModelCapabilities `json:"capabilities,omitempty"`
+	ID                 string             `json:"id"`
+	Object             string             `json:"object"`
+	Created            int64              `json:"created"`
+	OwnedBy            string             `json:"owned_by"`
+	Name               string             `json:"name,omitempty"`
+	Version            string             `json:"version,omitempty"`
+	Vendor             string             `json:"vendor,omitempty"`
+	Capabilities       *ModelCapabilities `json:"capabilities,omitempty"`
+	SupportedEndpoints []string           `json:"supported_endpoints,omitempty"`
 }
 
 type CopilotTokenResponse struct {

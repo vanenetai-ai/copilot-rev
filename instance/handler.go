@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"copilot-go/anthropic"
@@ -18,6 +19,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+var preferNativeMessagesByModel atomic.Bool
+
+func init() {
+	preferNativeMessagesByModel.Store(true)
+}
 
 // DoCompletionsProxy performs the upstream request for completions and returns the raw response.
 // The caller is responsible for closing resp.Body.
@@ -56,14 +63,15 @@ func ModelsHandler(c *gin.Context, state *config.State) {
 	}
 	for i, m := range models.Data {
 		mapped.Data[i] = config.ModelEntry{
-			ID:           store.ToDisplayID(m.ID),
-			Object:       m.Object,
-			Created:      m.Created,
-			OwnedBy:      m.OwnedBy,
-			Name:         m.Name,
-			Version:      m.Version,
-			Vendor:       m.Vendor,
-			Capabilities: m.Capabilities,
+			ID:                 store.ToDisplayID(m.ID),
+			Object:             m.Object,
+			Created:            m.Created,
+			OwnedBy:            m.OwnedBy,
+			Name:               m.Name,
+			Version:            m.Version,
+			Vendor:             m.Vendor,
+			Capabilities:       m.Capabilities,
+			SupportedEndpoints: append([]string(nil), m.SupportedEndpoints...),
 		}
 	}
 
@@ -95,18 +103,30 @@ func ForwardEmbeddingsResponse(c *gin.Context, resp *http.Response) {
 
 // DoMessagesProxy performs the upstream request for Anthropic messages.
 // Returns the raw response. bodyBytes is the original Anthropic payload.
-func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*http.Response, error) {
+func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*http.Response, bool, error) {
 	var anthropicPayload anthropic.AnthropicMessagesPayload
 	if err := json.Unmarshal(bodyBytes, &anthropicPayload); err != nil {
-		return nil, fmt.Errorf("invalid request: %v", err)
+		return nil, false, fmt.Errorf("invalid request: %v", err)
 	}
 
 	// Auto-fill max_tokens from model capabilities if not provided
+	copilotModelID := anthropic.NormalizeAnthropicModel(store.ToCopilotID(anthropicPayload.Model))
 	if anthropicPayload.MaxTokens == 0 {
-		copilotModelID := anthropic.NormalizeAnthropicModel(store.ToCopilotID(anthropicPayload.Model))
 		if limit := lookupMaxOutputTokens(state, copilotModelID); limit > 0 {
 			anthropicPayload.MaxTokens = limit
 		}
+	}
+	anthropicPayload.Model = copilotModelID
+
+	if preferNativeMessagesByModel.Load() && supportsModelEndpoint(state, copilotModelID, "/v1/messages", "/messages") {
+		nativeBytes, err := json.Marshal(anthropicPayload)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to marshal request: %v", err)
+		}
+		extraHeaders := make(http.Header)
+		extraHeaders.Set("Accept", "application/json, text/event-stream")
+		resp, err := ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/v1/messages", nativeBytes, extraHeaders, checkVisionContent(anthropicPayload))
+		return resp, true, err
 	}
 
 	hasVision := checkVisionContent(anthropicPayload)
@@ -114,19 +134,20 @@ func DoMessagesProxy(c *gin.Context, state *config.State, bodyBytes []byte) (*ht
 
 	openaiBytes, err := json.Marshal(openaiPayload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %v", err)
+		return nil, false, fmt.Errorf("failed to marshal request: %v", err)
 	}
 
 	extraHeaders := make(http.Header)
 	extraHeaders.Set("X-Initiator", initiatorFromMessages(openaiPayload.Messages))
 
-	return ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, extraHeaders, hasVision)
+	resp, err := ProxyRequestWithBytesCtx(c.Request.Context(), state, "POST", "/chat/completions", openaiBytes, extraHeaders, hasVision)
+	return resp, false, err
 }
 
 // ForwardMessagesResponse writes the upstream response to the client in Anthropic format.
 // originalBody is the original Anthropic request (used to determine stream mode).
 func ForwardMessagesResponse(c *gin.Context, resp *http.Response, originalBody []byte) {
-	clientResponse, err := BuildMessagesClientResponse(resp, originalBody)
+	clientResponse, err := BuildMessagesClientResponse(resp, originalBody, false)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -160,11 +181,18 @@ func BuildCompletionsClientResponse(resp *http.Response) (*CachedResponse, error
 	return buildRawClientResponse(resp)
 }
 
+func SetPreferNativeMessagesByModel(enabled bool) {
+	preferNativeMessagesByModel.Store(enabled)
+}
+
 func BuildEmbeddingsClientResponse(resp *http.Response) (*CachedResponse, error) {
 	return buildRawClientResponse(resp)
 }
 
-func BuildMessagesClientResponse(resp *http.Response, originalBody []byte) (*CachedResponse, error) {
+func BuildMessagesClientResponse(resp *http.Response, originalBody []byte, native bool) (*CachedResponse, error) {
+	if native {
+		return buildRawClientResponse(resp)
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	var anthropicPayload anthropic.AnthropicMessagesPayload
@@ -176,6 +204,32 @@ func BuildMessagesClientResponse(resp *http.Response, originalBody []byte) (*Cac
 		return buildAnthropicStreamResponse(resp)
 	}
 	return buildAnthropicNonStreamResponse(resp)
+}
+
+func supportsModelEndpoint(state *config.State, modelID string, endpoints ...string) bool {
+	if state == nil || modelID == "" {
+		return false
+	}
+	state.RLock()
+	models := state.Models
+	state.RUnlock()
+	if models == nil {
+		return false
+	}
+	for _, model := range models.Data {
+		if model.ID != modelID {
+			continue
+		}
+		for _, supported := range model.SupportedEndpoints {
+			for _, endpoint := range endpoints {
+				if strings.EqualFold(strings.TrimSpace(supported), endpoint) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func handleAnthropicStream(c *gin.Context, resp *http.Response) {

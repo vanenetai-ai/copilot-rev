@@ -39,6 +39,9 @@ func main() {
 			proxyCfg.CacheHitRateJitter,
 			proxyCfg.CacheMaxHitRate,
 		)
+		instance.SetResponsesAPIWebSearchEnabled(proxyCfg.ResponsesApiWebSearchEnabled)
+		instance.SetResponsesFunctionApplyPatchEnabled(proxyCfg.ResponsesFunctionApplyPatchEnabled)
+		instance.SetPreferNativeMessagesByModel(proxyCfg.PreferNativeMessagesByModel)
 		if proxyCfg.ProxyURL != "" {
 			config.SetProxyURL(proxyCfg.ProxyURL)
 			instance.RebuildHTTPClients()

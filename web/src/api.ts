@@ -98,11 +98,15 @@ export interface ModelMapping {
 
 export interface ProxySettings {
   proxyURL: string
+  cacheEnabled: boolean
   cacheTTLSeconds: number
   businessCacheHitRate: number
   clientCacheHitRate: number
   cacheHitRateJitter: number
   cacheMaxHitRate: number
+  responsesApiWebSearchEnabled: boolean
+  responsesFunctionApplyPatchEnabled: boolean
+  preferNativeMessagesByModel: boolean
 }
 
 export interface CopilotModel {
